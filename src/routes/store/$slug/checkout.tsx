@@ -49,6 +49,9 @@ export function Checkout() {
   const [shippingMethod, setShippingMethod] = useState<"standard" | "express">("standard");
   const [paymentMethod, setPaymentMethod] = useState("card");
   const [notes, setNotes] = useState("");
+  const [cardNumber, setCardNumber] = useState("4242 4242 4242 4242");
+  const [cardExp, setCardExp] = useState("12/28");
+  const [cardCcv, setCardCcv] = useState("123");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -87,12 +90,12 @@ export function Checkout() {
           country,
           shippingMethod,
           paymentMethod: method,
-          cardBrand: "",
-          cardLast4: "",
-          cardExp: "",
           notes,
           password: saveAccount ? password : "",
           token,
+          mockCard: method === "card",
+          cardLast4: method === "card" ? cardNumber.replace(/\D/g, "").slice(-4) : "",
+          cardExp: method === "card" ? cardExp : "",
           items: detailed.map((line) => ({ sku: line.sku, quantity: line.quantity })),
         },
       }),
@@ -120,7 +123,9 @@ export function Checkout() {
         <p className="inline-flex items-center gap-2 text-sm font-semibold text-accent"><Check className="size-4" /> Order received</p>
         <h1 className="text-4xl font-semibold tracking-tight">{place.data.number}</h1>
         <p className="text-base leading-7 text-muted">
-          {place.data.paymentUrl
+          {place.data.mockPaid
+            ? "Mock payment approved. The test card was accepted and this order is marked paid. No real charge was made."
+            : place.data.paymentUrl
             ? "This order is not paid yet. Finish payment on the secure page. It is marked paid only after the provider confirms it."
             : "The order is in your account. An invoice stays unpaid until it is collected."}
         </p>
@@ -309,31 +314,48 @@ export function Checkout() {
               className="shop-rise grid gap-3"
               onSubmit={(event) => {
                 event.preventDefault();
+                const digits = cardNumber.replace(/\D/g, "");
+                if (digits.length < 13 || !/^\d{2}\/\d{2}$/.test(cardExp) || cardCcv.replace(/\D/g, "").length < 3) {
+                  setError("Enter the card number, expiry, and CCV.");
+                  return;
+                }
                 setPaymentMethod("card");
                 setError("");
                 place.mutate("card");
               }}
             >
               <h1 className="flex items-center gap-2 text-lg font-semibold"><Lock className="size-4" /> Payment</h1>
+              <div className="grid gap-3 rounded-2xl border border-line bg-[#f7fbfb] p-4">
+                <p className="text-sm font-semibold">Mock payment gateway</p>
+                <p className="text-xs text-muted">Test card only. Nothing is charged and the full number is not stored.</p>
+                <ShopField label="Card number">
+                  <input value={cardNumber} onChange={(event) => setCardNumber(event.target.value)} inputMode="numeric" autoComplete="cc-number" className={fieldClass} />
+                </ShopField>
+                <div className="grid grid-cols-2 gap-3">
+                  <ShopField label="Expiry">
+                    <input value={cardExp} onChange={(event) => setCardExp(event.target.value)} placeholder="MM/YY" autoComplete="cc-exp" className={fieldClass} />
+                  </ShopField>
+                  <ShopField label="CCV">
+                    <input value={cardCcv} onChange={(event) => setCardCcv(event.target.value)} inputMode="numeric" autoComplete="cc-csc" className={fieldClass} />
+                  </ShopField>
+                </div>
+              </div>
               {checkout.data && !checkout.data.signedIn ? (
                 <a href="/production/signin" className="flex h-12 items-center justify-center rounded-xl bg-ink text-sm font-semibold text-white">Sign in to the customer portal</a>
               ) : null}
               {checkout.data?.signedIn && !checkout.data.canPurchase ? (
                 <p className="rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">This account cannot purchase products.</p>
               ) : null}
-              <p className="text-sm text-muted">
-                Pay now opens the configured payment page. The order stays unpaid until that provider confirms the charge. Card numbers are not stored here.
-              </p>
               <ShopField label="Order notes (optional)">
                 <textarea value={notes} onChange={(event) => setNotes(event.target.value)} className={`${fieldClass} h-24 py-3`} />
               </ShopField>
               {error ? <p className="text-sm text-bad">{error}</p> : null}
               <div className="mt-2 grid gap-3">
-                {(checkout.data?.canPayNow ?? false) ? (
-                <button type="submit" disabled={place.isPending || !checkout.data?.canPurchase} className="shop-press h-12 rounded-xl bg-ink text-sm font-semibold text-white disabled:opacity-50">
-                  {place.isPending && paymentMethod === "card" ? "Placing order" : `Pay now · ${money(total)}`}
+                {(checkout.data?.signedIn && checkout.data.canPurchase) ? (
+                <button type="submit" disabled={place.isPending} className="shop-press h-12 rounded-xl bg-ink text-sm font-semibold text-white disabled:opacity-50">
+                  {place.isPending && paymentMethod === "card" ? "Checking the test card" : `Pay now · ${money(total)}`}
                 </button>
-                ) : checkout.data?.signedIn ? <p className="text-center text-xs text-muted">Immediate payment is turned off for this account.</p> : null}
+                ) : checkout.data?.signedIn ? <p className="text-center text-xs text-muted">This account cannot purchase products.</p> : null}
                 {checkout.data?.payLater ? (
                   <button
                     type="button"

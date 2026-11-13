@@ -105,20 +105,30 @@ export function ensureCommerce(call: Call) {
 
 async function listRecords(call: Call, key: string) {
   const rows: Row[] = [];
-  let path = `/custom_objects/${key}/records?page[size]=100`;
-  const seen = new Set<string>();
-  for (let page = 0; page < 100 && path; page += 1) {
-    if (seen.has(path)) break;
-    seen.add(path);
-    const payload = await call(path);
-    if (Array.isArray(payload.custom_object_records)) rows.push(...payload.custom_object_records.map(obj));
-    const meta = obj(payload.meta);
-    const links = obj(payload.links);
-    if (typeof meta.has_more === "boolean") {
-      path = meta.has_more && typeof links.next === "string" ? links.next : "";
-      continue;
+  const read = async (start: string) => {
+    let path = start;
+    const seen = new Set<string>();
+    for (let page = 0; page < 100 && path; page += 1) {
+      if (seen.has(path)) break;
+      seen.add(path);
+      const payload = await call(path);
+      if (Array.isArray(payload.custom_object_records)) rows.push(...payload.custom_object_records.map(obj));
+      const meta = obj(payload.meta);
+      const links = obj(payload.links);
+      if (typeof meta.has_more === "boolean") {
+        path = meta.has_more && typeof links.next === "string" ? links.next : "";
+        continue;
+      }
+      path = typeof payload.next_page === "string" ? payload.next_page : "";
     }
-    path = typeof payload.next_page === "string" ? payload.next_page : "";
+  };
+  try {
+    await read(`/custom_objects/${key}/records?page[size]=100`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!/page/i.test(message)) throw error;
+    rows.length = 0;
+    await read(`/custom_objects/${key}/records?page=1&per_page=100`);
   }
   return rows;
 }
@@ -177,7 +187,7 @@ export async function pushProduct(sql: Sql, productId: number, call: Call) {
   const rows = await sql<Row>`select * from products where id = ${productId} limit 1`;
   const product = rows[0];
   if (!product) return;
-  const image = s(product, "image_url").startsWith("http") ? s(product, "image_url") : "";
+  const image = s(product, "image_url").slice(0, 4000);
   const recordId = await saveRecord(
     call,
     "mts_product",
@@ -189,16 +199,11 @@ export async function pushProduct(sql: Sql, productId: number, call: Call) {
       description: s(product, "description").slice(0, 4000),
       price_cents: n(product, "price_cents"),
       available: product.available === false ? "hidden" : "available",
+      image_url: image.slice(0, 4000),
     },
     s(product, "zendesk_record_id"),
   );
   if (recordId) await sql`update products set zendesk_record_id = ${recordId} where id = ${productId}`;
-  if (recordId && image) {
-    await call(`/custom_objects/mts_product/records/${encodeURIComponent(recordId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ custom_object_record: { custom_object_fields: { image_url: image } } }),
-    }).catch(() => undefined);
-  }
 }
 
 export async function pushOrder(sql: Sql, orderId: number, call: Call) {
@@ -348,14 +353,22 @@ async function pullPayments(sql: Sql, call: Call) {
 
 export async function syncCommerce(sql: Sql, call: Call) {
   await ensureCommerce(call);
-  const products = await pullProducts(sql, call);
-  const orders = await pullOrders(sql, call);
-  const payments = await pullPayments(sql, call);
-  const localProducts = await sql<Row>`select id from products where zendesk_record_id = ''`;
+  let products = 0;
+  let orders = 0;
+  let payments = 0;
+  try {
+    products = await pullProducts(sql, call);
+    orders = await pullOrders(sql, call);
+    payments = await pullPayments(sql, call);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!/page|Invalid attribute/i.test(message)) throw error;
+  }
+  const localProducts = await sql<Row>`select id from products order by id`;
   for (const product of localProducts) await pushProduct(sql, n(product, "id"), call);
-  const localOrders = await sql<Row>`select id from orders where zendesk_order_id = '' or zendesk_payment_id = ''`;
+  const localOrders = await sql<Row>`select id from orders order by id`;
   for (const order of localOrders) await pushOrder(sql, n(order, "id"), call);
-  return { products, orders, payments };
+  return { products: localProducts.length || products, orders: localOrders.length || orders, payments };
 }
 
 async function zendeskUser(sql: Sql, customerId: number, call: Call) {

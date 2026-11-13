@@ -20,7 +20,7 @@ export type Planned =
   | { tool: "list_tickets" }
   | { tool: "list_orders" }
   | { tool: "list_requests" }
-  | { tool: "open_ticket"; subject: string; body: string; category: string }
+  | { tool: "open_ticket"; subject: string; body: string; category: string; priority?: string; service?: string; asset?: string; justification?: string }
   | { tool: "reply_ticket"; id: number; body: string }
   | { tool: "order_service"; offering: Offering; site: string; notes: string; recipientEmail: string; drops: number; shipPhone: boolean; confirmMonthly: boolean }
   | { tool: "complaint"; subject: string; body: string }

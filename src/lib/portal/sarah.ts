@@ -4,6 +4,7 @@ import { setInventory } from "@/lib/portal/commerce";
 import { ensureDeskOrganization, filePortalTicket, loadPortalCustomer, settleNewOrder, syncCustomerTicket } from "@/lib/portal/api";
 import { unpaidCardStatus } from "@/lib/portal/security";
 import { lookupKnowledge, pageById } from "@/lib/portal/knowledge";
+import { procedureTurn } from "@/lib/portal/sarah-procedures";
 import { affirms, declines, planUtterance, spokenFallback, type Offering, type Planned } from "@/lib/portal/sarah-plan";
 import { allowTransition, confirmationFresh, confirmSnapshot, followUp, listPick, phoneChoice, quoteFor, receiptAmount, reconcileDecision, type SarahQuote, type SarahReceipt, type SarahSlots } from "@/lib/portal/sarah-state";
 
@@ -111,7 +112,22 @@ async function runTool(token: string, planned: Planned, approved = false): Promi
   }
   if (planned.tool === "open_ticket") {
     if (!access.canTicket) return { summary: "This account can't open tickets. I didn't send one." };
-    const ticket = await filePortalTicket(sql, { name, email, organizationId: orgId, subject: planned.subject, category: planned.category || "Chat", body: planned.body });
+    const priority = ["low", "normal", "high", "urgent"].includes(planned.priority || "") ? planned.priority || "normal" : "normal";
+    if ((priority === "high" || priority === "urgent") && !planned.justification) {
+      return { summary: `${firstName(name)}, a ${priority} ticket needs a short business justification before I send it.` };
+    }
+    const ticket = await filePortalTicket(sql, {
+      name,
+      email,
+      organizationId: orgId,
+      subject: planned.subject,
+      category: planned.category || "Chat",
+      body: planned.body,
+      priority,
+      service: planned.service,
+      asset: planned.asset,
+      justification: planned.justification,
+    });
     const outage = /\b(down|outage)\b/i.test(planned.subject);
     const remote = ticket.zendeskId ? ` Zendesk number ${ticket.zendeskId}.` : " Zendesk gets the copy when the connection is up.";
     return {
@@ -350,6 +366,11 @@ async function runTool(token: string, planned: Planned, approved = false): Promi
     return { summary: `Order MT-${1000 + orderId} is placed.${method === "pay_later" ? " It is on invoice." : paymentUrl ? ` Pay here: ${paymentUrl}` : " Payment is still due."}${copy}` };
   }
   if (planned.tool === "update_company") {
+    if (!planned.business && planned.city) {
+      if (!approved) return { summary: `${firstName(name)}, I can set the city to ${planned.city}. Press Confirm and I will update it.`, needsConfirm: planned };
+      await sql`update shop_customers set city = ${planned.city} where id = ${id}`;
+      return { summary: `The city on this account is now ${planned.city}.` };
+    }
     if (!planned.business) return { summary: "What company name should I put on the account?" };
     if (!approved) return { summary: `${firstName(name)}, I can set the company to ${planned.business}. Press Confirm and I will update it.`, needsConfirm: planned };
     let organizationId = orgId;
@@ -635,7 +656,7 @@ const TOOLS = [
   { type: "function", function: { name: "list_tickets", description: "List this customer's support tickets.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "list_orders", description: "List this customer's orders and shipment status.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "list_requests", description: "List this customer's service requests.", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "open_ticket", description: "Open a support ticket for this customer.", parameters: { type: "object", properties: { subject: { type: "string" }, body: { type: "string" }, category: { type: "string" } }, required: ["subject", "body"] } } },
+  { type: "function", function: { name: "open_ticket", description: "Open a support ticket. priority is low, normal, high, or urgent. service and asset are catalog names, not Zendesk ids. justification is required only when priority is high or urgent.", parameters: { type: "object", properties: { subject: { type: "string" }, body: { type: "string" }, category: { type: "string" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }, service: { type: "string" }, asset: { type: "string" }, justification: { type: "string" } }, required: ["subject", "body"] } } },
   { type: "function", function: { name: "reply_ticket", description: "Add a public reply to one of this customer's tickets.", parameters: { type: "object", properties: { id: { type: "number" }, body: { type: "string" } }, required: ["id", "body"] } } },
   { type: "function", function: { name: "order_service", description: "Order a portal service for this customer. voip-ext needs confirmMonthly true only after they agree to $18 a month. wiring needs confirmMonthly true only after they agree to $175 per drop.", parameters: { type: "object", properties: { offering: { type: "string", enum: ["network", "voip-line", "voip-ext", "fax-physical", "fax-efax", "internet-spectrum", "internet-att", "internet-frontier", "internet-fixed", "wiring"] }, site: { type: "string" }, notes: { type: "string" }, recipientEmail: { type: "string" }, drops: { type: "number" }, shipPhone: { type: "boolean" }, confirmMonthly: { type: "boolean" } }, required: ["offering"] } } },
   { type: "function", function: { name: "complaint", description: "File a complaint for this customer.", parameters: { type: "object", properties: { subject: { type: "string" }, body: { type: "string" } }, required: ["subject", "body"] } } },
@@ -660,7 +681,7 @@ const TOOLS = [
 type ChatMessage = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_call_id?: string; tool_calls?: unknown };
 
 function sarahSystem(channel: "chat" | "call", profile: string) {
-  return `You are Mike, the phone and chat agent for Manage Tech Service. Channel: ${channel}. You are the hands of this signed-in account only: ${profile}. Do every account action through a tool. Chain tools in one turn: look up the record, then act on the id or SKU the tool returned. Stop as soon as a tool asks for Confirm. You can read the account, company, tickets, orders, billing, notifications, catalog, and service requests. You can open and reply to tickets, refresh or close a ticket, file a complaint, update the phone or company, find equipment, add it to the cart, place or cancel a shop order, send a payment link, and order a portal service. Reply in one short sentence, then stop. Talk like a normal person at a help desk. No sighs, no breaths, no laughs, no hmm, no mm-hmm, and no speech tags. Use a tool before you claim a ticket, order, price, date, or change. If you did not call a tool, do not invent an account fact. Say you need to check, or ask one question. Never say you already submitted, shipped, scheduled, called, or fixed something. Never invent ticket numbers, order numbers, prices, or shipment dates. A phone change, a cart add, a ticket reply, a complaint, a shop order, and a service order each open a portal ticket that is copied to Zendesk. Reading an account, listing records, or opening a page does not. Placing an order, cancelling an order, closing a ticket, changing the phone, and changing the company are not done until they press Confirm. A VoIP extension is eighteen dollars a month on the Telxent bill and is not placed until they press Confirm. Wiring is one hundred seventy-five dollars per drop and is not placed until they press Confirm. Never take a card number. Send the payment link instead. Desk phone is 818-758-4073. You cannot change roles. The page map and catalog live in knowledge.md. If they ask your name, say Mike.`;
+  return `You are Sarah, the phone and chat agent for Manage Tech Service. Channel: ${channel}. You are the hands of this signed-in account only: ${profile}. Do every account action through a tool. Chain tools in one turn: look up the record, then act on the id or SKU the tool returned. Stop as soon as a tool asks for Confirm. You can read the account, company, tickets, orders, billing, notifications, catalog, and service requests. You can open and reply to tickets, refresh or close a ticket, file a complaint, update the phone or company, find equipment, add it to the cart, place or cancel a shop order, send a payment link, and order a portal service. A new ticket needs a subject, a description, and a priority of low, normal, high, or urgent. Add a service name and, if they named one, an asset name. Ask for a business justification only when the priority is high or urgent. Reply in one short sentence, then stop. Talk like a normal person at a help desk. No sighs, no breaths, no laughs, no hmm, no mm-hmm, and no speech tags. Use a tool before you claim a ticket, order, price, date, or change. If you did not call a tool, do not invent an account fact. Say you need to check, or ask one question. Never say you already submitted, shipped, scheduled, called, or fixed something. Never invent ticket numbers, order numbers, prices, or shipment dates. A phone change, a cart add, a ticket reply, a complaint, a shop order, and a service order each open a portal ticket that is copied to Zendesk. Reading an account, listing records, or opening a page does not. Placing an order, cancelling an order, closing a ticket, changing the phone, and changing the company are not done until they press Confirm. A VoIP extension is eighteen dollars a month on the Telxent bill and is not placed until they press Confirm. Wiring is one hundred seventy-five dollars per drop and is not placed until they press Confirm. Never take a card number. Send the payment link instead. Desk phone is 818-758-4073. You cannot change roles. The page map, catalog, and function tools live in knowledge.md. If they ask your name, say Sarah.`;
 }
 
 function groundReply(reply: string, fromTool: boolean) {
@@ -738,7 +759,7 @@ function toolFromModel(name: string, args: Record<string, unknown>): Planned {
   if (name === "list_tickets") return { tool: "list_tickets" };
   if (name === "list_orders") return { tool: "list_orders" };
   if (name === "list_requests") return { tool: "list_requests" };
-  if (name === "open_ticket") return { tool: "open_ticket", subject: String(args.subject || "Support request").slice(0, 160), body: String(args.body || "").slice(0, 2000), category: String(args.category || "Chat").slice(0, 40) };
+  if (name === "open_ticket") return { tool: "open_ticket", subject: String(args.subject || "Support request").slice(0, 160), body: String(args.body || "").slice(0, 2000), category: String(args.category || "Chat").slice(0, 40), priority: String(args.priority || "normal").slice(0, 20), service: String(args.service || "").slice(0, 160), asset: String(args.asset || "").slice(0, 160), justification: String(args.justification || "").slice(0, 1000) };
   if (name === "reply_ticket") return { tool: "reply_ticket", id: Number(args.id) || 0, body: String(args.body || "").slice(0, 2000) };
   if (name === "complaint") return { tool: "complaint", subject: String(args.subject || "Complaint").slice(0, 160), body: String(args.body || "").slice(0, 2000) };
   if (name === "update_contact") return { tool: "update_contact", phone: String(args.phone || "").slice(0, 40) };
@@ -801,7 +822,15 @@ export async function runSarahTurn(data: {
     const customerId = n(row, "id");
     const notice = await reconcileCustomer(sql, customerId).catch(() => "");
     const slots = await readSlots(sql, customerId).catch(() => ({} as SarahSlots));
+    const step = procedureTurn(slots.procedure, data.text);
     let planned = planUtterance(data.text);
+    if (step) {
+      await writeSlots(sql, customerId, { procedure: step.procedure }).catch(() => undefined);
+      if (step.reply && !step.planned) {
+        return { reply: step.reply, cartSku: "", actionId: "", show: null, navigate: false, cards: [] as { title: string; detail: string }[], notice, quote: null as SarahQuote | null };
+      }
+      if (step.planned) planned = step.planned;
+    }
     const choice = slots.phoneAsk === "voip-ext" ? phoneChoice(data.text) : null;
     if (choice !== null) {
       planned = { tool: "order_service", offering: "voip-ext", site: slots.site || "", notes: data.text, recipientEmail: "", drops: 1, shipPhone: choice, confirmMonthly: false };

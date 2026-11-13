@@ -200,19 +200,39 @@ async function conversationsFetch(path: string, method = "GET", payload?: unknow
   return text ? (JSON.parse(text) as Record<string, unknown>) : {};
 }
 
+function visibleName(value: string) {
+  return value
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200d\ufeff]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function conversationProfile(name: string, email: string) {
+  const words = visibleName(name).split(" ").filter((part) => part.length > 0);
+  const local = visibleName((email.split("@")[0] || "").replace(/[^\p{L}\p{N}._-]/gu, ""));
+  const givenName = (words[0] || local || "Customer").slice(0, 80);
+  const rest = words.slice(1).join(" ");
+  return {
+    givenName: givenName.length > 0 ? givenName : "Customer",
+    surname: (rest.length > 0 ? rest : "Customer").slice(0, 80),
+  };
+}
+
 export async function upsertConversationUser(input: { externalId: string; name: string; email: string; company?: string }) {
   const found = await conversationsFetch(`/users/${encodeURIComponent(input.externalId)}`);
   const existing = found && typeof found.user === "object" ? (found.user as RemoteUser) : null;
   if (existing?.id) return existing.id;
-  const parts = input.name.trim().split(/\s+/);
+  const profile = conversationProfile(input.name, input.email);
+  const company = visibleName(input.company || "");
   const created = await conversationsFetch("/users", "POST", {
     externalId: input.externalId,
     profile: {
-      givenName: parts[0] || input.email,
-      surname: parts.slice(1).join(" "),
+      givenName: profile.givenName,
+      surname: profile.surname,
       email: input.email,
     },
-    metadata: { company: input.company || "", source: "mts-portal" },
+    metadata: { ...(company ? { company } : {}), source: "mts-portal" },
   });
   const user = created && typeof created.user === "object" ? (created.user as RemoteUser) : null;
   if (!user?.id) throw new Error("Zendesk did not return a user id.");

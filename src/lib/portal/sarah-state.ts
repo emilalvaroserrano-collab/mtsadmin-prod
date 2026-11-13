@@ -37,7 +37,14 @@ export function reconcileDecision(input: { status: string; ageMs: number; resour
   return null;
 }
 
-export type SarahSlots = { offering?: string; drops?: number; site?: string; ticketIds?: number[]; phoneAsk?: string };
+export type SarahSlots = {
+  offering?: string;
+  drops?: number;
+  site?: string;
+  ticketIds?: number[];
+  phoneAsk?: string;
+  procedure?: import("@/lib/portal/sarah-procedures").Procedure | null;
+};
 
 export function phoneChoice(text: string) {
   const q = text.toLowerCase().trim();

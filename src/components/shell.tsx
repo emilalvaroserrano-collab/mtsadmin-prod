@@ -237,7 +237,7 @@ export function Shell({ children }: { children: ReactNode }) {
     <div className="portal-stage min-h-screen text-ink">
       <PortalAtmosphere />
       <div className={collapsed ? "min-h-screen md:grid md:grid-cols-[4.5rem_minmax(0,1fr)]" : "min-h-screen md:grid md:grid-cols-[16.5rem_minmax(0,1fr)]"}>
-      <aside className="hidden border-r border-line md:sticky md:top-0 md:block md:h-screen"><Nav compact={collapsed} /></aside>
+      <aside className="hidden border-r border-line md:sticky md:top-0 md:z-30 md:block md:h-dvh md:self-start md:overflow-hidden"><Nav compact={collapsed} /></aside>
       {more ? (
         <div className="fixed inset-0 z-40 md:hidden">
           <button className="absolute inset-0 bg-ink/40" aria-label="Close menu" onClick={() => setMore(false)} />

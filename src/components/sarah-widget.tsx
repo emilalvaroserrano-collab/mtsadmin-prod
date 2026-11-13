@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Phone, PhoneOff, Send, X } from "lucide-react";
-import { issueAgentHandoff } from "@/lib/portal/api";
+import { askSarah, cancelSarahAction, confirmSarahAction } from "@/lib/portal/sarah";
 import { useShopToken } from "@/lib/portal/shop-session";
-
-const AGENT_URL = "https://mts-agent.vercel.app/";
-const AGENT_ORIGIN = "https://mts-agent.vercel.app";
+import { addToCart } from "@/lib/portal/store-cart";
 
 let sarahLive = false;
 let voiceLevels: number[] = [];
@@ -74,34 +72,61 @@ function AudioBars({ levels, wide = false }: { levels: number[]; wide?: boolean 
   );
 }
 
+type Line = { from: "you" | "sarah"; text: string };
+type SpeechRec = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: { results: { length: number; [index: number]: { isFinal: boolean; 0?: { transcript?: string } } } }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+function portalPath(to: string) {
+  const base = window.location.pathname.startsWith("/production/user-portal") ? "/production/user-portal" : "/portal";
+  if (to === "/portal") return base;
+  if (to.startsWith("/portal/")) return `${base}${to.slice("/portal".length)}`;
+  return to;
+}
+
 export function SarahWidget() {
   const token = useShopToken();
   const levels = useVoiceLevels();
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<"menu" | "agent">("menu");
-  const [sessionLive, setSessionLive] = useState(false);
+  const [mode, setMode] = useState<"menu" | "chat" | "call">("menu");
   const [spot, setSpot] = useState<{ right: number; bottom: number } | null>(null);
   const [wide, setWide] = useState(false);
+  const [lines, setLines] = useState<Line[]>([]);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionId, setActionId] = useState("");
+  const [listening, setListening] = useState(false);
   const drag = useRef<{ px: number; py: number; right: number; bottom: number; moved: boolean; spot: { right: number; bottom: number } | null } | null>(null);
   const skipClick = useRef(false);
   const openRef = useRef(false);
   const liveRef = useRef(false);
-  const frame = useRef<HTMLIFrameElement>(null);
   const tokenRef = useRef("");
+  const actionRef = useRef("");
+  const history = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
+  const callOn = useRef(false);
+  const speaking = useRef(false);
+  const recRef = useRef<SpeechRec | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const askRef = useRef<(text: string, channel: "chat" | "call") => Promise<void>>(async () => undefined);
 
+  useEffect(() => { tokenRef.current = token; }, [token]);
+  useEffect(() => { actionRef.current = actionId; }, [actionId]);
+  useEffect(() => { openRef.current = open; }, [open]);
   useEffect(() => {
-    tokenRef.current = token;
-  }, [token]);
-
+    const live = mode === "chat" || mode === "call";
+    liveRef.current = live;
+    setSarahLive(live);
+    if (!live) setVoiceLevels([]);
+  }, [mode]);
   useEffect(() => {
-    openRef.current = open;
-  }, [open]);
-
-  useEffect(() => {
-    liveRef.current = sessionLive;
-    setSarahLive(sessionLive);
-    if (!sessionLive) setVoiceLevels([]);
-  }, [sessionLive]);
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
+  }, [lines, actionId]);
 
   useEffect(() => {
     const media = window.matchMedia("(min-width: 768px)");
@@ -116,14 +141,13 @@ export function SarahWidget() {
       } catch { /* keep the default corner */ }
     }
     const toggle = () => {
-      if (openRef.current) setOpen(false);
-      else {
-        setOpen(true);
-        if (liveRef.current) setMode("agent");
-      }
+      if (openRef.current && !liveRef.current) setOpen(false);
+      else setOpen(true);
     };
     const end = () => {
-      setSessionLive(false);
+      callOn.current = false;
+      recRef.current?.stop();
+      window.speechSynthesis?.cancel();
       setMode("menu");
       setOpen(false);
     };
@@ -136,45 +160,115 @@ export function SarahWidget() {
     };
   }, []);
 
-  useEffect(() => {
-    async function publish() {
-      const current = tokenRef.current;
-      const target = frame.current?.contentWindow;
-      if (!current || !target) return;
-      try {
-        const issued = await issueAgentHandoff({ data: current });
-        target.postMessage({ type: "mts-user", code: issued.code }, AGENT_ORIGIN);
-      } catch { /* the agent stays a guest until the next ready ping */ }
-    }
-    function onMessage(event: MessageEvent) {
-      if (event.origin !== AGENT_ORIGIN) return;
-      if (event.data?.type === "mts-agent-ready") {
-        void publish();
-        return;
-      }
-      if (event.data?.type === "mts-voice" && Array.isArray(event.data.levels)) {
-        setVoiceLevels(event.data.levels.filter((level: unknown) => typeof level === "number").slice(0, 14));
-        return;
-      }
-      if (event.data?.type === "mts-minimize") setOpen(false);
-    }
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
+  function say(text: string) {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 1;
+    speaking.current = true;
+    recRef.current?.stop();
+    utter.onend = () => {
+      speaking.current = false;
+      if (callOn.current) recRef.current?.start();
+    };
+    window.speechSynthesis.speak(utter);
+  }
 
-  function openAgent() {
-    setSessionLive(true);
-    setMode("agent");
+  async function ask(text: string, channel: "chat" | "call") {
+    const current = tokenRef.current;
+    const trimmed = text.trim();
+    if (!current || !trimmed || busy) return;
+    setLines((prev) => [...prev, { from: "you" as const, text: trimmed }].slice(-24));
+    setBusy(true);
+    try {
+      const result = await askSarah({
+        data: { token: current, text: trimmed, channel, actionId: actionRef.current, history: history.current },
+      });
+      history.current = [...history.current, { role: "user" as const, content: trimmed }, { role: "assistant" as const, content: result.reply }].slice(-6);
+      if (result.cartSku) addToCart(result.cartSku);
+      if (result.navigate && result.show?.to) window.location.assign(portalPath(result.show.to));
+      setActionId(result.actionId || "");
+      const extra = result.cards?.length ? ` ${result.cards.map((card) => card.title).join(", ")}.` : "";
+      const reply = `${result.reply}${extra}`.trim();
+      setLines((prev) => [...prev, { from: "sarah" as const, text: reply }].slice(-24));
+      if (channel === "call") say(result.reply);
+    } catch (error) {
+      const reply = error instanceof Error ? error.message : "I couldn't do that.";
+      setLines((prev) => [...prev, { from: "sarah", text: reply }]);
+      if (channel === "call") say(reply);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  askRef.current = ask;
+
+  useEffect(() => {
+    if (mode !== "call" || !open) return;
+    const win = window as Window & { SpeechRecognition?: new () => SpeechRec; webkitSpeechRecognition?: new () => SpeechRec };
+    const Ctor = win.SpeechRecognition || win.webkitSpeechRecognition;
+    if (!Ctor) return;
+    const rec = new Ctor();
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.lang = "en-US";
+    rec.onresult = (event) => {
+      const last = event.results[event.results.length - 1];
+      const text = last?.isFinal ? last[0]?.transcript?.trim() || "" : "";
+      if (text) void askRef.current(text, "call");
+    };
+    rec.onend = () => {
+      if (callOn.current && !speaking.current) rec.start();
+    };
+    recRef.current = rec;
+    callOn.current = true;
+    setListening(true);
+    try { rec.start(); } catch { setListening(false); }
+    return () => {
+      callOn.current = false;
+      rec.onend = null;
+      rec.stop();
+      recRef.current = null;
+      setListening(false);
+    };
+  }, [mode, open]);
+
+  function start(next: "chat" | "call") {
+    if (!token) {
+      setLines([{ from: "sarah", text: "Sign in first. I can only work on the account that is signed in." }]);
+    }
+    setMode(next);
     setOpen(true);
   }
 
   function endSession() {
-    setSessionLive(false);
+    callOn.current = false;
+    recRef.current?.stop();
+    window.speechSynthesis?.cancel();
     setMode("menu");
     setOpen(false);
+    setActionId("");
   }
 
-  const full = open && mode === "agent";
+  async function decide(decision: "confirm" | "cancel") {
+    if (!token || !actionId || busy) return;
+    setBusy(true);
+    try {
+      const result = decision === "confirm"
+        ? await confirmSarahAction({ data: { token, actionId } })
+        : await cancelSarahAction({ data: { token, actionId } });
+      if (result.cartSku) addToCart(result.cartSku);
+      setActionId("");
+      setLines((prev) => [...prev, { from: "sarah", text: result.reply || (decision === "confirm" ? "Done." : "Cancelled.") }]);
+      if (mode === "call" && result.reply) say(result.reply);
+    } catch (error) {
+      setLines((prev) => [...prev, { from: "sarah", text: error instanceof Error ? error.message : "That did not go through." }]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const full = open && (mode === "chat" || mode === "call");
   const place = spot ? { right: spot.right, bottom: spot.bottom } : undefined;
 
   function clamp(right: number, bottom: number) {
@@ -188,46 +282,54 @@ export function SarahWidget() {
 
   return (
     <>
-      {sessionLive ? (
-        <div
-          className={full ? "fixed inset-0 z-50 flex md:inset-auto md:right-4 md:bottom-24 md:h-[min(100dvh-8rem,40rem)] md:w-[24rem]" : "pointer-events-none fixed inset-0 -z-10 opacity-0"}
-          style={full && wide ? place : undefined}
-        >
-          <section className="h-full min-h-0 w-full overflow-hidden bg-surface md:rounded-2xl md:shadow-2xl">
-            <iframe
-              ref={frame}
-              title="Manage Tech Service support"
-              src={AGENT_URL}
-              allow="microphone; camera; autoplay; display-capture; clipboard-write"
-              className="h-full w-full border-0 bg-bg"
-            />
-          </section>
-        </div>
-      ) : null}
-      <div
-        className={full ? "hidden" : open || sessionLive ? "fixed inset-x-0 bottom-0 z-40 flex justify-end md:inset-x-auto md:right-4 md:bottom-24 md:w-[24rem]" : "hidden"}
-        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
-      >
-        <div className="flex w-full flex-col items-stretch gap-2 px-3 md:w-[24rem] md:items-end md:px-0">
-          {sessionLive && !full ? (
-            <div className="hidden w-full items-center gap-2 self-end rounded-full bg-ink py-2 pr-2 pl-4 text-white shadow-lg md:flex md:w-auto">
-              <AudioBars levels={levels} />
-              <button type="button" onClick={openAgent} className="min-w-0 flex-1 truncate text-left text-sm font-semibold">Sarah is still on the line</button>
-              <button type="button" aria-label="End support" onClick={endSession} className="grid size-9 place-items-center rounded-full bg-[#8e1f0b]"><PhoneOff className="size-4" /></button>
+      {full ? (
+        <div className="fixed inset-0 z-50 flex flex-col bg-surface md:inset-auto md:right-4 md:bottom-24 md:h-[min(100dvh-8rem,40rem)] md:w-[24rem] md:overflow-hidden md:rounded-2xl md:shadow-2xl" style={wide ? place : undefined}>
+          <header className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
+            <p className="text-sm font-semibold">{mode === "call" ? (listening ? "Sarah is listening" : "Sarah") : "Chat with Sarah"}</p>
+            <button type="button" aria-label="End support" onClick={endSession}><PhoneOff className="size-4" /></button>
+          </header>
+          {mode === "call" ? <div className="px-4 pt-3"><AudioBars levels={levels} wide /></div> : null}
+          <div ref={scroller} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3">
+            {lines.map((line, index) => (
+              <p key={`${line.from}-${index}`} className={line.from === "you" ? "ml-8 rounded-2xl bg-accent px-3 py-2 text-sm text-white" : "mr-8 rounded-2xl bg-accent-soft px-3 py-2 text-sm text-ink"}>{line.text}</p>
+            ))}
+            {!token ? <p className="text-sm text-muted">Sign in, then tell Sarah what you need.</p> : null}
+          </div>
+          {actionId ? (
+            <div className="grid grid-cols-2 gap-2 px-4 pb-2">
+              <button type="button" disabled={busy} onClick={() => void decide("confirm")} className="h-11 rounded-xl bg-accent text-sm font-semibold text-white">Confirm</button>
+              <button type="button" disabled={busy} onClick={() => void decide("cancel")} className="h-11 rounded-xl border border-line text-sm font-semibold">Cancel</button>
             </div>
           ) : null}
+          <form
+            className="flex gap-2 border-t border-line p-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const text = draft;
+              setDraft("");
+              void ask(text, mode === "call" ? "call" : "chat");
+            }}
+          >
+            <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={mode === "call" ? "Or type it" : "Tell Sarah what you need"} className="h-11 min-w-0 flex-1 rounded-xl border border-line bg-surface px-3 text-sm" />
+            <button type="submit" disabled={busy || !draft.trim()} aria-label="Send" className="grid size-11 place-items-center rounded-xl bg-ink text-white"><Send className="size-4" /></button>
+          </form>
+        </div>
+      ) : null}
+      <div className={full ? "hidden" : open ? "fixed inset-x-0 bottom-0 z-40 flex justify-end md:inset-x-auto md:right-4 md:bottom-24 md:w-[24rem]" : "hidden"} style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+        <div className="flex w-full flex-col items-stretch gap-2 px-3 md:w-[24rem] md:items-end md:px-0">
           {open && mode === "menu" ? (
             <section className="grid w-full gap-3 self-end rounded-2xl border border-line bg-surface p-4 shadow-lg md:w-80">
               <div className="flex items-center justify-between text-ink">
                 <p className="text-sm font-semibold">Support</p>
                 <button type="button" aria-label="Close support" onClick={() => setOpen(false)}><X className="size-4" /></button>
               </div>
+              <p className="text-sm text-muted">Tell Sarah what you need. She does it on this account.</p>
               <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={openAgent} className="grid h-20 place-items-center gap-1 rounded-xl bg-accent text-sm font-semibold text-white">
+                <button type="button" onClick={() => start("chat")} className="grid h-20 place-items-center gap-1 rounded-xl bg-accent text-sm font-semibold text-white">
                   <Send className="size-5" />
                   Chat
                 </button>
-                <button type="button" onClick={openAgent} className="grid h-20 place-items-center gap-1 rounded-xl border border-line bg-accent-soft text-sm font-semibold text-ink">
+                <button type="button" onClick={() => start("call")} className="grid h-20 place-items-center gap-1 rounded-xl border border-line bg-accent-soft text-sm font-semibold text-ink">
                   <Phone className="size-5" />
                   Call
                 </button>
@@ -266,17 +368,17 @@ export function SarahWidget() {
             return;
           }
           if (open && mode === "menu") setOpen(false);
-          else if (sessionLive) openAgent();
           else setOpen(true);
         }}
         style={place}
-        className={full || (sessionLive && !wide) ? "hidden" : "fixed right-4 bottom-[max(5.5rem,calc(4.5rem+env(safe-area-inset-bottom)))] z-50 grid size-16 touch-none cursor-grab place-items-center rounded-full bg-ink text-white shadow-[0_8px_24px_rgba(0,57,112,0.28)] ring-4 ring-white active:cursor-grabbing md:bottom-4"}
+        className={full ? "hidden" : "fixed right-4 bottom-[max(5.5rem,calc(4.5rem+env(safe-area-inset-bottom)))] z-50 grid size-16 touch-none cursor-grab place-items-center rounded-full bg-ink text-white shadow-[0_8px_24px_rgba(0,57,112,0.28)] ring-4 ring-white active:cursor-grabbing md:bottom-4"}
       >
-        {sessionLive ? <AudioBars levels={levels} /> : <AgentMark />}
+        <AgentMark />
       </button>
     </>
   );
 }
+
 
 export function SarahHeaderButton() {
   const live = useSarahLive();

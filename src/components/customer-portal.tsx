@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Bell, ClipboardList, Headphones, House, LayoutDashboard, LogOut, Menu, Receipt, Settings, X } from "lucide-react";
+import { Bell, Building2, House, LayoutDashboard, LogOut, Menu, MessageSquareWarning, Package, Receipt, Settings, ShoppingBag, Ticket, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { signOut } from "@/lib/auth/client";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
@@ -14,23 +14,37 @@ import { PortalAtmosphere } from "@/components/portal-atmosphere";
 import { SarahHeaderButton, SarahWidget } from "@/components/sarah-widget";
 
 const NAV = [
+  { to: "/portal/tickets", label: "Tickets", icon: Ticket, guide: "tickets" },
+  { to: "/portal/shop", label: "Order", icon: ShoppingBag, guide: "order", also: ["/portal/checkout", "/portal/product"] },
   { to: "/portal", label: "Home", icon: House, exact: true, guide: "home" },
-  { to: "/portal/tickets", label: "Tickets", icon: Headphones, guide: "tickets" },
-  { to: "/portal/shop", label: "Order", icon: ClipboardList, guide: "order" },
-  { to: "/portal/orders", label: "Orders", icon: ClipboardList, guide: "orders" },
   { to: "/portal/billing", label: "Billing", icon: Receipt, guide: "billing" },
-  { to: "/portal/complaints", label: "Complaints", icon: Headphones, guide: "complaints" },
-  { to: "/portal/organization", label: "Organization", icon: House, guide: "organization" },
   { to: "/portal/account", label: "Account", icon: Settings, guide: "account" },
+  { to: "/portal/orders", label: "Orders", icon: Package, guide: "orders" },
+  { to: "/portal/complaints", label: "Complaints", icon: MessageSquareWarning, guide: "complaints" },
+  { to: "/portal/organization", label: "Organization", icon: Building2, guide: "organization" },
 ] as const;
 
-const MOBILE_TABS = ["/portal", "/portal/tickets", "/portal/shop", "/portal/billing", "/portal/account"] as const;
+const MOBILE_TABS = NAV.slice(0, 5);
 
 function portalHref(path: string, to: string) {
   const base = path.startsWith("/production/user-portal") ? "/production/user-portal" : "/portal";
   if (to === "/portal") return base;
   if (to.startsWith("/portal/")) return `${base}${to.slice("/portal".length)}`;
   return to;
+}
+
+function clean(path: string) {
+  return path.length > 1 ? path.replace(/\/$/, "") : path;
+}
+
+function isActive(path: string, item: (typeof NAV)[number]) {
+  const here = clean(path);
+  const targets = [item.to, ...("also" in item ? item.also : [])];
+  return targets.some((to) => {
+    const href = clean(portalHref(path, to));
+    if ("exact" in item && item.exact && to === item.to) return here === href;
+    return here === href || here.startsWith(`${href}/`);
+  });
 }
 
 export function PortalShell({ children }: { children: ReactNode }) {
@@ -55,10 +69,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
   });
   const unread = (notices.data ?? []).filter((item) => !item.read).length;
   const [menu, setMenu] = useState(false);
-  const current = NAV.find((item) => {
-    const href = portalHref(path, item.to);
-    return "exact" in item && item.exact ? path === href : path === href || path.startsWith(`${href}/`);
-  });
+  const current = NAV.find((item) => isActive(path, item));
   const name = user?.displayName || session.data?.customer.name || "there";
   const count = cart.reduce((sum, line) => sum + line.quantity, 0);
 
@@ -74,9 +85,9 @@ export function PortalShell({ children }: { children: ReactNode }) {
           <nav className="hidden min-w-0 items-center gap-1 overflow-x-auto md:col-start-1 md:flex" aria-label="Customer">
             {NAV.map((item) => {
               const href = portalHref(path, item.to);
-              const active = current?.to === item.to;
+              const active = isActive(path, item);
               return (
-                <Link key={item.to} to={href as "/portal"} data-guide={item.guide} className={active ? "shrink-0 rounded-lg bg-ink px-3 py-2 text-sm text-white" : "shrink-0 rounded-lg px-3 py-2 text-sm text-ink hover:bg-surface-2"}>
+                <Link key={item.to} to={href as "/portal"} data-guide={item.guide} aria-current={active ? "page" : undefined} className={active ? "shrink-0 rounded-lg bg-ink px-3 py-2 text-sm text-white" : "shrink-0 rounded-lg px-3 py-2 text-sm text-ink hover:bg-surface-2"}>
                   {item.label}
                 </Link>
               );
@@ -93,7 +104,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
               {unread > 0 ? <span className="absolute top-0.5 right-0.5 min-w-4 rounded-full bg-accent px-1 text-center text-[10px] font-semibold leading-4 text-white">{unread > 99 ? "99+" : unread}</span> : null}
             </Link>
             <Link to={portalHref(path, "/portal/shop") as "/portal"} className="relative hidden size-11 place-items-center rounded-xl md:grid" aria-label="Order">
-              <ClipboardList className="size-5" />
+              <ShoppingBag className="size-5" />
               {count > 0 ? <span className="absolute top-1 right-1 min-w-4 rounded-full bg-accent px-1 text-center text-[10px] font-semibold leading-4 text-white">{count}</span> : null}
             </Link>
             <SarahHeaderButton />
@@ -124,9 +135,12 @@ export function PortalShell({ children }: { children: ReactNode }) {
               </div>
               <button type="button" aria-label="Close menu" onClick={() => setMenu(false)} className="grid size-10 shrink-0 place-items-center"><X className="size-5" /></button>
             </div>
-            {NAV.map((item) => (
-              <Link key={item.to} to={portalHref(path, item.to) as "/portal"} data-guide={item.guide} onClick={() => setMenu(false)} className="rounded-xl px-3 py-3 text-sm font-medium hover:bg-surface-2">{item.label}</Link>
-            ))}
+            {NAV.map((item) => {
+              const active = isActive(path, item);
+              return (
+                <Link key={item.to} to={portalHref(path, item.to) as "/portal"} data-guide={item.guide} aria-current={active ? "page" : undefined} onClick={() => setMenu(false)} className={active ? "rounded-xl bg-ink px-3 py-3 text-sm font-medium text-white" : "rounded-xl px-3 py-3 text-sm font-medium hover:bg-surface-2"}>{item.label}</Link>
+              );
+            })}
             <Link to={portalHref(path, "/portal/notifications") as "/portal"} onClick={() => setMenu(false)} className="flex items-center justify-between rounded-xl px-3 py-3 text-sm font-medium hover:bg-surface-2">
               <span>Notifications</span>
               {unread > 0 ? <span className="min-w-5 rounded-full bg-accent px-1.5 text-center text-[11px] font-semibold leading-5 text-white">{unread > 99 ? "99+" : unread}</span> : null}
@@ -137,14 +151,12 @@ export function PortalShell({ children }: { children: ReactNode }) {
       ) : null}
       <SarahWidget />
       <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line bg-surface px-1 pt-1 md:hidden" style={{ paddingBottom: "max(0.35rem, env(safe-area-inset-bottom))" }} aria-label="Portal">
-        {MOBILE_TABS.map((to) => {
-          const item = NAV.find((entry) => entry.to === to);
-          if (!item) return null;
+        {MOBILE_TABS.map((item) => {
           const Icon = item.icon;
           const href = portalHref(path, item.to);
-          const active = "exact" in item && item.exact ? path === href : path === href || path.startsWith(`${href}/`);
+          const active = isActive(path, item);
           return (
-            <Link key={to} to={href as "/portal"} data-guide={item.guide} aria-current={active ? "page" : undefined} className={active ? "grid min-h-14 place-items-center gap-0.5 text-ink" : "grid min-h-14 place-items-center gap-0.5 text-muted"}>
+            <Link key={item.to} to={href as "/portal"} data-guide={item.guide} aria-current={active ? "page" : undefined} className={active ? "grid min-h-14 place-items-center gap-0.5 text-ink" : "grid min-h-14 place-items-center gap-0.5 text-muted"}>
               <span className="relative">
                 <Icon className="size-5" strokeWidth={active ? 2.25 : 1.75} />
                 {item.to === "/portal/shop" && count > 0 ? <span className="absolute -top-1.5 -right-2 min-w-4 rounded-full bg-accent px-1 text-center text-[10px] font-semibold leading-4 text-white">{count}</span> : null}

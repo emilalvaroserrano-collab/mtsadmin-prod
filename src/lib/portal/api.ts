@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { publishLive } from "@/lib/portal/live";
 import { DEFAULT_EMAIL_SIGNATURE, htmlMailTemplate, renderSignature, signatureHtml, textMailTemplate } from "@/lib/portal/email-signature";
+import { ORDER_MENU } from "@/lib/portal/order-menu";
 import { customerCanFill } from "@/lib/portal/zendesk-field-types";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql, type Sql } from "@/lib/db";
@@ -951,14 +952,20 @@ export async function applyZendeskWebhook(sql: Sql, payload: unknown) {
   const type = typeof body.type === "string" ? body.type : "";
   const detail = obj(body.detail);
   const ticket = obj(body.ticket);
-  const ticketId = ticket.id != null ? String(ticket.id) : type.includes("ticket") && detail.id != null ? String(detail.id) : "";
+  const placeholderId = body.ticket_id ?? body["ticket.id"];
+  const ticketId = ticket.id != null
+    ? String(ticket.id)
+    : placeholderId != null && /^\d+$/.test(String(placeholderId))
+      ? String(placeholderId)
+      : type.includes("ticket") && detail.id != null
+        ? String(detail.id)
+        : "";
   const settings = await readZendesk(sql);
-  if (!supportConnected(settings)) return;
+  const connected = supportConnected(settings);
   if (/^\d+$/.test(ticketId)) {
     const rows = await sql<Row>`select * from tickets where zendesk_id = ${ticketId} limit 1`;
-    if (rows[0]) {
-      await refreshRemoteTicket(sql, mapTicket(rows[0])).catch(() => undefined);
-    } else {
+    if (rows[0] && connected) await refreshRemoteTicket(sql, mapTicket(rows[0])).catch(() => undefined);
+    if (!rows[0] && connected) {
       const remotePayload = await zendesk(settings, `/tickets/${encodeURIComponent(ticketId)}.json?include=users`).catch(() => null);
       const remote = remotePayload ? obj(remotePayload.ticket) : {};
       if (remote.id != null && typeof remote.subject === "string") {
@@ -984,7 +991,20 @@ export async function applyZendeskWebhook(sql: Sql, payload: unknown) {
         if (saved[0]) await pullComments(sql, settings, n(saved[0], "id"), ticketId, users).catch(() => undefined);
       }
     }
+    const note = typeof body.latest_comment === "string" ? body.latest_comment.trim() : typeof body.comment === "string" ? body.comment.trim() : "";
+    const status = typeof body.status === "string" ? body.status : typeof ticket.status === "string" ? ticket.status : "";
+    if (rows[0] && (note || status)) {
+      const localId = n(rows[0], "id");
+      if (status) await sql`update tickets set status = ${zdStatus(status)}, updated_at = now() where id = ${localId}`;
+      if (note) {
+        const last = await sql<Row>`select body from ticket_comments where ticket_id = ${localId} order by created_at desc limit 1`;
+        if (!last[0] || s(last[0], "body") !== note) {
+          await sql`insert into ticket_comments (ticket_id, author_name, body, public_note) values (${localId}, 'MTS Support', ${note.slice(0, 4000)}, true)`;
+        }
+      }
+    }
   }
+  if (!connected) return;
   if (type.includes("user") && detail.id != null) {
     const userPayload = await zendesk(settings, `/users/${encodeURIComponent(String(detail.id))}.json`).catch(() => null);
     const remote = userPayload ? directoryUser(obj(userPayload.user)) : null;
@@ -1081,9 +1101,35 @@ async function openWelcomeTicket(
   return { ticketId, zendeskId, warning };
 }
 
+async function ticketCatalogFields(sql: Sql, input: { service: string; asset: string; justification: string }) {
+  try {
+    const fields: { id: number; value: string }[] = [];
+    const rows = await sql<Row>`select zendesk_id, title, field_type, options_json from zendesk_fields where portal_visible = true`;
+    const named = (title: string, wanted: string) => {
+      const field = rows.find((row) => s(row, "title").toLowerCase() === title && s(row, "field_type") === "lookup");
+      if (!field || !wanted) return;
+      let options: { name?: string; value?: string }[] = [];
+      try { options = JSON.parse(s(field, "options_json") || "[]") as { name?: string; value?: string }[]; } catch { options = []; }
+      const match = options.find((option) => (option.name || "").toLowerCase() === wanted.toLowerCase());
+      const id = Number(s(field, "zendesk_id"));
+      if (match?.value && Number.isFinite(id)) fields.push({ id, value: match.value });
+    };
+    named("service", input.service);
+    named("asset", input.asset);
+    if (input.justification) {
+      const field = rows.find((row) => s(row, "title").toLowerCase() === "business justification" && s(row, "field_type") === "textarea");
+      const id = field ? Number(s(field, "zendesk_id")) : 0;
+      if (Number.isFinite(id) && id > 0) fields.push({ id, value: input.justification });
+    }
+    return fields;
+  } catch {
+    return [];
+  }
+}
+
 export async function filePortalTicket(
   sql: Sql,
-  input: { name: string; email: string; organizationId: number | null; subject: string; category: string; body: string },
+  input: { name: string; email: string; organizationId: number | null; subject: string; category: string; body: string; priority?: string; service?: string; asset?: string; justification?: string },
 ) {
   const recent = await sql<Row>`
     select id, zendesk_id from tickets
@@ -1095,10 +1141,17 @@ export async function filePortalTicket(
   `;
   if (recent[0]) return { ticketId: n(recent[0], "id"), zendeskId: s(recent[0], "zendesk_id") };
   let zendeskId = "";
+  const priority = ["low", "normal", "high", "urgent"].includes(input.priority || "") ? input.priority || "normal" : "normal";
+  const detail = [
+    input.body,
+    input.service ? `Service: ${input.service}` : "",
+    input.asset ? `Asset: ${input.asset}` : "",
+    input.justification ? `Business justification: ${input.justification}` : "",
+  ].filter(Boolean).join("\n");
   const inserted = await sql<Row>`
     insert into tickets (subject, status, priority, category, organization_id, requester_name, requester_email, tags, view_label, zendesk_id)
     values (
-      ${input.subject}, 'new', 'normal', ${input.category}, ${input.organizationId},
+      ${input.subject}, 'new', ${priority}, ${input.category}, ${input.organizationId},
       ${input.name}, ${input.email}, 'portal,customer', '', ''
     )
     returning id
@@ -1106,7 +1159,7 @@ export async function filePortalTicket(
   const ticketId = n(inserted[0], "id");
   await sql`
     insert into ticket_comments (ticket_id, author_name, body, public_note)
-    values (${ticketId}, ${input.name || "Customer"}, ${input.body}, true)
+    values (${ticketId}, ${input.name || "Customer"}, ${detail}, true)
   `;
   const settings = await readZendesk(sql);
   if (!supportConnected(settings)) {
@@ -1114,15 +1167,18 @@ export async function filePortalTicket(
     return { ticketId, zendeskId };
   }
   try {
+    const customFields = await ticketCatalogFields(sql, { service: input.service || "", asset: input.asset || "", justification: input.justification || "" });
     const created = await zendesk(settings, "/tickets.json", {
       method: "POST",
       body: JSON.stringify({
         ticket: {
           subject: input.subject,
-          comment: { body: input.body },
+          comment: { body: detail },
           tags: ["portal", "customer"],
           status: "new",
+          priority,
           requester: { name: input.name || input.email, email: input.email },
+          ...(customFields.length ? { custom_fields: customFields } : {}),
         },
       }),
     });
@@ -3218,6 +3274,92 @@ function shownByConditions(
   return { shown, required };
 }
 
+async function zendeskChoiceList(settings: ZSettings, path: string, key: string) {
+  const choices: { name: string; value: string }[] = [];
+  await eachZendeskPage(settings, `${path}?page[size]=100`, (payload) => {
+    const rows = Array.isArray(payload[key]) ? payload[key] : [];
+    for (const item of rows) {
+      const row = obj(item);
+      const name = typeof row.name === "string" ? row.name : "";
+      const value = row.id != null ? String(row.id) : "";
+      if (name && value) choices.push({ name: name.slice(0, 160), value: value.slice(0, 160) });
+    }
+  });
+  return choices;
+}
+
+async function ensureZendeskCatalogRecords(settings: ZSettings) {
+  const services = await zendeskChoiceList(settings, "/service_catalog/items.json", "service_catalog_items");
+  const serviceNames = new Set(services.map((item) => item.name));
+  const brands = await zendesk(settings, "/brands.json").catch(() => ({}));
+  const brandRows = obj(brands).brands;
+  const brandList = Array.isArray(brandRows) ? brandRows.map((item: unknown) => obj(item)) : [];
+  const brand = brandList.find((item) => item.default === true) || brandList[0];
+  const brandId = brand?.id != null ? String(brand.id) : "";
+  for (const category of ORDER_MENU) {
+    for (const name of category.items) {
+      if (serviceNames.has(name)) continue;
+      await zendesk(settings, "/custom_objects/standard::service_catalog_item/records.json", {
+        method: "POST",
+        body: JSON.stringify({
+          custom_object_record: {
+            name,
+            custom_object_fields: {
+              "standard::description": `${name} from ${category.title}.`,
+              "standard::description_field_enabled": true,
+              "standard::brand_id": brandId,
+              "standard::ticket_form_id": "64182076514585",
+            },
+          },
+        }),
+      }).catch(() => undefined);
+      serviceNames.add(name);
+    }
+  }
+  const types = new Map<string, string>();
+  await eachZendeskPage(settings, "/it_asset_management/asset_types.json?page[size]=100", (payload) => {
+    const rows = Array.isArray(payload.asset_types) ? payload.asset_types : [];
+    for (const item of rows) {
+      const row = obj(item);
+      if (typeof row.name === "string" && row.id != null) types.set(row.name, String(row.id));
+    }
+  });
+  const wantedTypes = ["Monitor", "Printer", "Phone", "Network"];
+  for (const name of wantedTypes) {
+    if (types.has(name)) continue;
+    const created = await zendesk(settings, "/it_asset_management/asset_types.json", {
+      method: "POST",
+      body: JSON.stringify({ asset_type: { name, parent_id: types.get("Hardware") || undefined } }),
+    }).catch(() => undefined);
+    const id = created ? obj(created.asset_type).id : undefined;
+    if (id != null) types.set(name, String(id));
+  }
+  const assets = await zendeskChoiceList(settings, "/it_asset_management/assets.json", "assets");
+  const assetNames = new Set(assets.map((item) => item.name));
+  const samples = [
+    ["Front desk laptop", "Laptop"],
+    ["Reception desktop", "Desktop"],
+    ["Office monitor", "Monitor"],
+    ["Front desk printer", "Printer"],
+    ["Desk phone", "Phone"],
+    ["Network switch", "Network"],
+  ] as const;
+  let statusId = "";
+  await eachZendeskPage(settings, "/it_asset_management/statuses.json?page[size]=20", (payload) => {
+    const rows = Array.isArray(payload.statuses) ? payload.statuses : [];
+    const available = rows.map((item) => obj(item)).find((row) => row.external_id === "available" || row.name === "Available");
+    if (available?.id != null) statusId = String(available.id);
+  });
+  for (const [name, typeName] of samples) {
+    const typeId = types.get(typeName);
+    if (!typeId || !statusId || assetNames.has(name)) continue;
+    await zendesk(settings, "/it_asset_management/assets.json", {
+      method: "POST",
+      body: JSON.stringify({ asset: { name, asset_type_id: typeId, status_id: statusId, notes: "MTS catalog asset" } }),
+    }).catch(() => undefined);
+  }
+}
+
 async function syncZendeskCatalog(sql: Sql, force = false) {
   await ensureDeskCatalog(sql);
   const settings = await readZendesk(sql);
@@ -3227,9 +3369,9 @@ async function syncZendeskCatalog(sql: Sql, force = false) {
     const stamp = await sql<Row>`select fields_synced_at from integration_settings where id = 1`;
     const at = stamp[0] ? s(stamp[0], "fields_synced_at") : "";
     const waiting = Number(pending[0]?.n ?? pending[0]?.count ?? 0) > 0;
-    const lookups = await sql<Row>`select count(*) as n from zendesk_fields where key in ('lookup', 'multi_lookup') and portal_visible = true`;
-    const leaked = Number(lookups[0]?.n ?? lookups[0]?.count ?? 0) > 0;
-    if (!waiting && !leaked && at && Date.now() - new Date(at).getTime() < 10 * 60 * 1000) return "";
+    const ready = await sql<Row>`select count(*) as n from zendesk_fields where field_type = 'lookup' and portal_visible = true and options_json <> '[]'`;
+    const needsChoices = Number(ready[0]?.n ?? ready[0]?.count ?? 0) === 0;
+    if (!waiting && !needsChoices && at && Date.now() - new Date(at).getTime() < 10 * 60 * 1000) return "";
   }
   const fields: Record<string, unknown>[] = [];
   const forms: Record<string, unknown>[] = [];
@@ -3239,6 +3381,9 @@ async function syncZendeskCatalog(sql: Sql, force = false) {
   await eachZendeskPage(settings, "/ticket_forms.json?page[size]=100", (payload) => {
     if (Array.isArray(payload.ticket_forms)) forms.push(...payload.ticket_forms.map((item) => obj(item)));
   });
+  await ensureZendeskCatalogRecords(settings);
+  const serviceOptions = await zendeskChoiceList(settings, "/service_catalog/items.json", "service_catalog_items");
+  const assetOptions = await zendeskChoiceList(settings, "/it_asset_management/assets.json", "assets");
   await sql`delete from zendesk_fields`;
   await sql`delete from zendesk_forms`;
   for (const field of fields) {
@@ -3248,9 +3393,13 @@ async function syncZendeskCatalog(sql: Sql, force = false) {
     const description = typeof field.description === "string" ? field.description : "";
     const customOptions = Array.isArray(field.custom_field_options) ? field.custom_field_options : [];
     const systemOptions = Array.isArray(field.system_field_options) ? field.system_field_options : [];
-    const options = fieldOptions(customOptions.length ? customOptions : systemOptions);
-    const portalVisible = customerCanFill(type, field.visible_in_portal !== false, field.editable_in_portal !== false);
-    const required = portalVisible && (field.required_in_portal === true || type === "subject" || type === "description");
+    const target = typeof field.relationship_target_type === "string" ? field.relationship_target_type : "";
+    let options = fieldOptions(customOptions.length ? customOptions : systemOptions);
+    if (target === "zen:custom_object:standard::service_catalog_item") options = serviceOptions;
+    if (type === "lookup" && target === "zen:custom_object:standard::itam_asset") options = assetOptions;
+    const lookupChoice = type === "lookup" && options.length > 0 && field.visible_in_portal !== false;
+    const portalVisible = customerCanFill(type, field.visible_in_portal !== false, field.editable_in_portal !== false) || lookupChoice;
+    const required = lookupChoice ? field.required_in_portal === true : portalVisible && (field.required_in_portal === true || type === "subject" || type === "description");
     await sql`
       insert into zendesk_fields (zendesk_id, key, title, description, field_type, required, active, position, system_field, portal_visible, options_json)
       values (
@@ -4433,6 +4582,74 @@ export const getShopCheckout = createServerFn({ method: "GET" })
     };
   });
 
+export const getCustomerBilling = createServerFn({ method: "GET" })
+  .validator((token: string) => str(token, 80))
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const signedIn = await shopByToken(sql, data);
+    if (!signedIn) return null;
+    const payments = await readPayments(sql);
+    const access = await accessFor(sql, signedIn);
+    const payLater = Boolean(b(signedIn, "pay_later") || access.canDefer);
+    const methods = [
+      { id: "card", label: "Debit or credit card", detail: "Charged when the order is placed." },
+      ...(payments.methods.includes("alternative") ? [{ id: "alternative", label: "Alternative Payments", detail: "Opens the Alternative Payments page." }] : []),
+      ...(payments.methods.includes("invoice") ? [{ id: "invoice", label: "Invoice", detail: payments.invoiceTerms || "Billed on account terms." }] : []),
+      ...(payments.methods.includes("purchase_order") ? [{ id: "purchase_order", label: "Purchase order", detail: "A purchase order number is collected at checkout." }] : []),
+    ];
+    const selected = s(signedIn, "payment_method") || "card";
+    return {
+      payLater,
+      selected: selected === "pay_later" && !payLater ? "card" : selected,
+      methods,
+      card: s(signedIn, "card_last4")
+        ? { brand: s(signedIn, "card_brand") || "Card", last4: s(signedIn, "card_last4"), exp: s(signedIn, "card_exp") }
+        : null,
+    };
+  });
+
+export const saveCustomerBilling = createServerFn({ method: "POST" })
+  .validator((input: unknown) => {
+    const raw = obj(input);
+    const method = str(raw.method, 32);
+    if (!["card", "alternative", "invoice", "purchase_order", "pay_later"].includes(method)) throw new Error("Choose a payment method.");
+    return {
+      token: str(raw.token, 80),
+      method,
+      cardNumber: str(raw.cardNumber, 24),
+      cardExp: str(raw.cardExp, 5),
+      cardCcv: str(raw.cardCcv, 4),
+    };
+  })
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const signedIn = await shopByToken(sql, data.token);
+    if (!signedIn) throw new Error("Sign in again to update billing.");
+    const access = await accessFor(sql, signedIn);
+    const payLater = Boolean(b(signedIn, "pay_later") || access.canDefer);
+    if (data.method === "pay_later" && !payLater) throw new Error("Order now, pay later is not turned on for this account.");
+    const digits = data.cardNumber.replace(/\D/g, "");
+    const savingCard = data.method === "card" && digits.length > 0;
+    if (data.method === "card" && !s(signedIn, "card_last4") && digits.length < 13) throw new Error("Enter the card number, expiry, and CCV.");
+    if (savingCard && (!/^\d{2}\/\d{2}$/.test(data.cardExp) || data.cardCcv.replace(/\D/g, "").length < 3)) {
+      throw new Error("Enter the card number, expiry, and CCV.");
+    }
+    const brand = digits.startsWith("4") ? "Visa" : digits.startsWith("5") ? "Mastercard" : digits.startsWith("3") ? "Amex" : "Card";
+    if (savingCard) {
+      await sql`
+        update shop_customers set
+          payment_method = ${data.method},
+          card_brand = ${brand},
+          card_last4 = ${digits.slice(-4)},
+          card_exp = ${data.cardExp}
+        where id = ${n(signedIn, "id")}
+      `;
+    } else {
+      await sql`update shop_customers set payment_method = ${data.method} where id = ${n(signedIn, "id")}`;
+    }
+    return { ok: true };
+  });
+
 export const setShopPayLater = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: unknown) => {
@@ -4561,7 +4778,18 @@ async function shopOrders(sql: Sql, customerId: number, email: string): Promise<
   `;
   const orders: ShopOrder[] = [];
   for (const row of rows) {
-    const items = await sql<Row>`select * from order_items where order_id = ${n(row, "id")} order by id`;
+    const items = await sql<Row>`
+      select oi.*,
+        coalesce(
+          (select pi.url from product_images pi where pi.product_id = p.id order by pi.sort_order, pi.id limit 1),
+          p.image_url,
+          ''
+        ) as image_url
+      from order_items oi
+      left join products p on p.id = coalesce(oi.product_id, (select id from products where sku = oi.sku limit 1))
+      where oi.order_id = ${n(row, "id")}
+      order by oi.id
+    `;
     orders.push({
       id: n(row, "id"),
       number: `MT-${1000 + n(row, "id")}`,
@@ -4571,10 +4799,16 @@ async function shopOrders(sql: Sql, customerId: number, email: string): Promise<
       trackingNumber: s(row, "tracking_number"),
       trackingCarrier: s(row, "tracking_carrier"),
       shippingMethod: s(row, "shipping_method"),
+      shippingCents: n(row, "shipping_cents"),
       paymentMethod: s(row, "payment_method"),
+      paymentStatus: s(row, "payment_status"),
       paymentUrl: s(row, "payment_url"),
+      cardBrand: s(row, "card_brand"),
+      cardLast4: s(row, "card_last4"),
       totalCents: n(row, "goods_cents") + n(row, "shipping_cents"),
       shipName: s(row, "ship_name"),
+      shipEmail: s(row, "ship_email"),
+      shipPhone: s(row, "ship_phone"),
       shipAddress: s(row, "ship_address"),
       shipCity: s(row, "ship_city"),
       shipRegion: s(row, "ship_region"),
@@ -4585,6 +4819,7 @@ async function shopOrders(sql: Sql, customerId: number, email: string): Promise<
         sku: s(item, "sku"),
         quantity: n(item, "quantity"),
         unitPriceCents: n(item, "unit_price_cents"),
+        imageUrl: s(item, "image_url"),
       })),
     });
   }
@@ -5888,6 +6123,7 @@ export const placeStorefrontOrder = createServerFn({ method: "POST" })
       notes: str(raw.notes, 1000),
       password: str(raw.password, 80),
       token: str(raw.token, 80),
+      mockCard: raw.mockCard === true,
       cardBrand: str(raw.cardBrand, 16) === "debit" ? "debit" : "credit",
       cardLast4: str(raw.cardLast4, 4).replace(/\D/g, "").slice(-4),
       cardExp: str(raw.cardExp, 5),
@@ -5903,10 +6139,12 @@ export const placeStorefrontOrder = createServerFn({ method: "POST" })
     const access = await accessFor(sql, signedIn);
     if (!access.canPurchase) throw new Error("This account cannot purchase products.");
     const payLater = data.paymentMethod === "pay_later";
+    const mockCard = !payLater && data.mockCard;
     if (payLater && !(access.canDefer || b(signedIn, "pay_later"))) {
       throw new Error("This account has to pay before the order is placed.");
     }
-    if (!payLater && !access.canPayNow) throw new Error("This account cannot pay immediately.");
+    if (!payLater && !mockCard && !access.canPayNow) throw new Error("This account cannot pay immediately.");
+    if (mockCard && !/^\d{4}$/.test(data.cardLast4)) throw new Error("Enter the card number.");
     const method = payLater ? "pay_later" : "card";
     const skus = data.items.map((item) => item.sku);
     const products = await sql.query<Row>(
@@ -5996,13 +6234,13 @@ export const placeStorefrontOrder = createServerFn({ method: "POST" })
     let paymentUrl = "";
     await sql`
       update orders set
-        card_brand = '',
-        card_last4 = '',
-        card_exp = '',
-        payment_status = ${payLater ? "pay_later" : unpaidCardStatus()}
+        card_brand = ${mockCard ? "visa" : ""},
+        card_last4 = ${mockCard ? data.cardLast4 : ""},
+        card_exp = ${mockCard ? data.cardExp : ""},
+        payment_status = ${payLater ? "pay_later" : mockCard ? "paid" : unpaidCardStatus()}
       where id = ${id}
     `;
-    if (method === "card") {
+    if (method === "card" && !mockCard) {
       const creds = await loadAlternativeCreds(sql);
       if (creds) {
         try {
@@ -6035,9 +6273,9 @@ export const placeStorefrontOrder = createServerFn({ method: "POST" })
       values ('', 'Online shop', 'Created order', ${`MT-${1000 + id}`}, ${data.email})
     `;
     await settleNewOrder(sql, id, "Online shop");
-    await notifyCustomer(sql, customerId, payLater ? "Order invoiced" : "Order received", `MT-${1000 + id} is ${payLater ? "on invoice" : "waiting for payment"}.`, `/portal/orders/${id}`).catch(() => undefined);
+    await notifyCustomer(sql, customerId, payLater ? "Order invoiced" : mockCard ? "Payment approved" : "Order received", `MT-${1000 + id} is ${payLater ? "on invoice" : mockCard ? "paid with the test card" : "waiting for payment"}.`, `/portal/orders/${id}`).catch(() => undefined);
     await mirrorCommerce(sql, "order", id);
-    return { id, number: `MT-${1000 + id}`, paymentUrl, token, totalCents: subtotal + shipping.cents };
+    return { id, number: `MT-${1000 + id}`, paymentUrl, token, totalCents: subtotal + shipping.cents, mockPaid: mockCard };
   });
 
 

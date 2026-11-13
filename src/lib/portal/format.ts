@@ -64,7 +64,7 @@ export function shopifyPayment(order: OrderState): { label: string; tone: ShopTo
   if (pay === "authorized") return { label: "Authorized", tone: "info" };
   if (order.status === "cancelled") return { label: "Voided", tone: "neutral" };
   if (pay === "pending" || pay === "upcoming" || pay === "processing") return { label: "Payment pending", tone: "warn" };
-  if (order.paymentMethod === "invoice" || order.paymentMethod === "purchase_order") return { label: "Payment pending", tone: "warn" };
+  if (order.paymentMethod === "invoice" || order.paymentMethod === "purchase_order" || order.paymentMethod === "pay_later" || pay === "pay_later") return { label: "Payment pending", tone: "warn" };
   return { label: "Unpaid", tone: "warn" };
 }
 

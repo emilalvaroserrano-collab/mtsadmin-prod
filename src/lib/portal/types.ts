@@ -412,6 +412,7 @@ export type ShopOrderItem = {
   sku: string;
   quantity: number;
   unitPriceCents: number;
+  imageUrl: string;
 };
 
 export type ShopOrder = {
@@ -423,10 +424,16 @@ export type ShopOrder = {
   trackingNumber: string;
   trackingCarrier: string;
   shippingMethod: string;
+  shippingCents: number;
   paymentMethod: string;
+  paymentStatus: string;
   paymentUrl: string;
+  cardBrand: string;
+  cardLast4: string;
   totalCents: number;
   shipName: string;
+  shipEmail: string;
+  shipPhone: string;
   shipAddress: string;
   shipCity: string;
   shipRegion: string;

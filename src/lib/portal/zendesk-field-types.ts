@@ -7,14 +7,15 @@ export function customerCanFill(type: string, visible: boolean, editable: boolea
 }
 
 export function fieldAudience(type: string, visible: boolean) {
+  if (visible) return "Customer form";
   if (NOT_COLLECTED.has(type)) return "Not collected";
-  if (AGENT_ONLY.has(type) || !visible) return "Agent only";
-  return "Customer form";
+  if (AGENT_ONLY.has(type)) return "Agent only";
+  return "Agent only";
 }
 
 export function controlKind(type: string) {
   if (type === "textarea" || type === "description") return "textarea" as const;
-  if (type === "tagger" || type === "priority" || type === "tickettype" || type === "multiselect") return "select" as const;
+  if (type === "tagger" || type === "priority" || type === "tickettype" || type === "multiselect" || type === "lookup") return "select" as const;
   if (type === "checkbox") return "checkbox" as const;
   if (type === "integer" || type === "decimal") return "number" as const;
   if (type === "date") return "date" as const;
