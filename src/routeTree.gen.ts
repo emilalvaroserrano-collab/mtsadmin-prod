@@ -16,6 +16,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as PortalRouteImport } from './routes/portal'
 import { Route as UpgradeRouteImport } from './routes/upgrade'
 import { Route as AppAccessRouteImport } from './routes/_app/access'
+import { Route as AppAgentRouteImport } from './routes/_app/agent'
 import { Route as AppCampaignsRouteImport } from './routes/_app/campaigns'
 import { Route as AppDashboardRouteImport } from './routes/_app/dashboard'
 import { Route as AppDocsRouteImport } from './routes/_app/docs'
@@ -58,6 +59,8 @@ import { Route as AppOrganizationsOrgIdRouteImport } from './routes/_app/organiz
 import { Route as AppTicketsIndexRouteImport } from './routes/_app/tickets/index'
 import { Route as AppTicketsTicketIdRouteImport } from './routes/_app/tickets/$ticketId'
 import { Route as ApiAgentSplatRouteImport } from './routes/api/agent/$'
+import { Route as ApiAgentSpeakRouteImport } from './routes/api/agent/speak'
+import { Route as ApiAgentStreamRouteImport } from './routes/api/agent/stream'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiJobsRunRouteImport } from './routes/api/jobs/run'
 import { Route as ApiOauthAuthorizeRouteImport } from './routes/api/oauth/authorize'
@@ -73,6 +76,7 @@ import { Route as PortalTicketsTicketIdRouteImport } from './routes/portal/ticke
 import { Route as PortalTicketsNewRouteImport } from './routes/portal/tickets/new'
 import { Route as ProductionAdminPortalIndexRouteImport } from './routes/production/admin-portal/index'
 import { Route as ProductionAdminPortalAccessRouteImport } from './routes/production/admin-portal/access'
+import { Route as ProductionAdminPortalAgentRouteImport } from './routes/production/admin-portal/agent'
 import { Route as ProductionAdminPortalCampaignsRouteImport } from './routes/production/admin-portal/campaigns'
 import { Route as ProductionAdminPortalDocsRouteImport } from './routes/production/admin-portal/docs'
 import { Route as ProductionAdminPortalFormsRouteImport } from './routes/production/admin-portal/forms'
@@ -150,6 +154,11 @@ const UpgradeRoute = UpgradeRouteImport.update({
 const AppAccessRoute = AppAccessRouteImport.update({
   id: '/access',
   path: '/access',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAgentRoute = AppAgentRouteImport.update({
+  id: '/agent',
+  path: '/agent',
   getParentRoute: () => AppRoute,
 } as any)
 const AppCampaignsRoute = AppCampaignsRouteImport.update({
@@ -363,6 +372,16 @@ const ApiAgentSplatRoute = ApiAgentSplatRouteImport.update({
   path: '/api/agent/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAgentSpeakRoute = ApiAgentSpeakRouteImport.update({
+  id: '/api/agent/speak',
+  path: '/api/agent/speak',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAgentStreamRoute = ApiAgentStreamRouteImport.update({
+  id: '/api/agent/stream',
+  path: '/api/agent/stream',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -438,6 +457,12 @@ const ProductionAdminPortalAccessRoute =
   ProductionAdminPortalAccessRouteImport.update({
     id: '/access',
     path: '/access',
+    getParentRoute: () => ProductionAdminPortalRoute,
+  } as any)
+const ProductionAdminPortalAgentRoute =
+  ProductionAdminPortalAgentRouteImport.update({
+    id: '/agent',
+    path: '/agent',
     getParentRoute: () => ProductionAdminPortalRoute,
   } as any)
 const ProductionAdminPortalCampaignsRoute =
@@ -706,6 +731,7 @@ export interface FileRoutesByFullPath {
   '/portal': typeof PortalRouteWithChildren
   '/upgrade': typeof UpgradeRoute
   '/access': typeof AppAccessRoute
+  '/agent': typeof AppAgentRoute
   '/campaigns': typeof AppCampaignsRoute
   '/dashboard': typeof AppDashboardRoute
   '/docs': typeof AppDocsRoute
@@ -744,6 +770,8 @@ export interface FileRoutesByFullPath {
   '/organizations/$orgId': typeof AppOrganizationsOrgIdRoute
   '/tickets/$ticketId': typeof AppTicketsTicketIdRoute
   '/api/agent/$': typeof ApiAgentSplatRoute
+  '/api/agent/speak': typeof ApiAgentSpeakRoute
+  '/api/agent/stream': typeof ApiAgentStreamRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/jobs/run': typeof ApiJobsRunRoute
   '/api/oauth/authorize': typeof ApiOauthAuthorizeRoute
@@ -755,6 +783,7 @@ export interface FileRoutesByFullPath {
   '/portal/tickets/$ticketId': typeof PortalTicketsTicketIdRoute
   '/portal/tickets/new': typeof PortalTicketsNewRoute
   '/production/admin-portal/access': typeof ProductionAdminPortalAccessRoute
+  '/production/admin-portal/agent': typeof ProductionAdminPortalAgentRoute
   '/production/admin-portal/campaigns': typeof ProductionAdminPortalCampaignsRoute
   '/production/admin-portal/docs': typeof ProductionAdminPortalDocsRoute
   '/production/admin-portal/forms': typeof ProductionAdminPortalFormsRoute
@@ -814,6 +843,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/upgrade': typeof UpgradeRoute
   '/access': typeof AppAccessRoute
+  '/agent': typeof AppAgentRoute
   '/campaigns': typeof AppCampaignsRoute
   '/dashboard': typeof AppDashboardRoute
   '/docs': typeof AppDocsRoute
@@ -850,6 +880,8 @@ export interface FileRoutesByTo {
   '/organizations/$orgId': typeof AppOrganizationsOrgIdRoute
   '/tickets/$ticketId': typeof AppTicketsTicketIdRoute
   '/api/agent/$': typeof ApiAgentSplatRoute
+  '/api/agent/speak': typeof ApiAgentSpeakRoute
+  '/api/agent/stream': typeof ApiAgentStreamRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/jobs/run': typeof ApiJobsRunRoute
   '/api/oauth/authorize': typeof ApiOauthAuthorizeRoute
@@ -861,6 +893,7 @@ export interface FileRoutesByTo {
   '/portal/tickets/$ticketId': typeof PortalTicketsTicketIdRoute
   '/portal/tickets/new': typeof PortalTicketsNewRoute
   '/production/admin-portal/access': typeof ProductionAdminPortalAccessRoute
+  '/production/admin-portal/agent': typeof ProductionAdminPortalAgentRoute
   '/production/admin-portal/campaigns': typeof ProductionAdminPortalCampaignsRoute
   '/production/admin-portal/docs': typeof ProductionAdminPortalDocsRoute
   '/production/admin-portal/forms': typeof ProductionAdminPortalFormsRoute
@@ -923,6 +956,7 @@ export interface FileRoutesById {
   '/portal': typeof PortalRouteWithChildren
   '/upgrade': typeof UpgradeRoute
   '/_app/access': typeof AppAccessRoute
+  '/_app/agent': typeof AppAgentRoute
   '/_app/campaigns': typeof AppCampaignsRoute
   '/_app/dashboard': typeof AppDashboardRoute
   '/_app/docs': typeof AppDocsRoute
@@ -961,6 +995,8 @@ export interface FileRoutesById {
   '/_app/organizations/$orgId': typeof AppOrganizationsOrgIdRoute
   '/_app/tickets/$ticketId': typeof AppTicketsTicketIdRoute
   '/api/agent/$': typeof ApiAgentSplatRoute
+  '/api/agent/speak': typeof ApiAgentSpeakRoute
+  '/api/agent/stream': typeof ApiAgentStreamRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/jobs/run': typeof ApiJobsRunRoute
   '/api/oauth/authorize': typeof ApiOauthAuthorizeRoute
@@ -972,6 +1008,7 @@ export interface FileRoutesById {
   '/portal/tickets/$ticketId': typeof PortalTicketsTicketIdRoute
   '/portal/tickets/new': typeof PortalTicketsNewRoute
   '/production/admin-portal/access': typeof ProductionAdminPortalAccessRoute
+  '/production/admin-portal/agent': typeof ProductionAdminPortalAgentRoute
   '/production/admin-portal/campaigns': typeof ProductionAdminPortalCampaignsRoute
   '/production/admin-portal/docs': typeof ProductionAdminPortalDocsRoute
   '/production/admin-portal/forms': typeof ProductionAdminPortalFormsRoute
@@ -1034,6 +1071,7 @@ export interface FileRouteTypes {
     | '/portal'
     | '/upgrade'
     | '/access'
+    | '/agent'
     | '/campaigns'
     | '/dashboard'
     | '/docs'
@@ -1072,6 +1110,8 @@ export interface FileRouteTypes {
     | '/organizations/$orgId'
     | '/tickets/$ticketId'
     | '/api/agent/$'
+    | '/api/agent/speak'
+    | '/api/agent/stream'
     | '/api/auth/$'
     | '/api/jobs/run'
     | '/api/oauth/authorize'
@@ -1083,6 +1123,7 @@ export interface FileRouteTypes {
     | '/portal/tickets/$ticketId'
     | '/portal/tickets/new'
     | '/production/admin-portal/access'
+    | '/production/admin-portal/agent'
     | '/production/admin-portal/campaigns'
     | '/production/admin-portal/docs'
     | '/production/admin-portal/forms'
@@ -1142,6 +1183,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/upgrade'
     | '/access'
+    | '/agent'
     | '/campaigns'
     | '/dashboard'
     | '/docs'
@@ -1178,6 +1220,8 @@ export interface FileRouteTypes {
     | '/organizations/$orgId'
     | '/tickets/$ticketId'
     | '/api/agent/$'
+    | '/api/agent/speak'
+    | '/api/agent/stream'
     | '/api/auth/$'
     | '/api/jobs/run'
     | '/api/oauth/authorize'
@@ -1189,6 +1233,7 @@ export interface FileRouteTypes {
     | '/portal/tickets/$ticketId'
     | '/portal/tickets/new'
     | '/production/admin-portal/access'
+    | '/production/admin-portal/agent'
     | '/production/admin-portal/campaigns'
     | '/production/admin-portal/docs'
     | '/production/admin-portal/forms'
@@ -1250,6 +1295,7 @@ export interface FileRouteTypes {
     | '/portal'
     | '/upgrade'
     | '/_app/access'
+    | '/_app/agent'
     | '/_app/campaigns'
     | '/_app/dashboard'
     | '/_app/docs'
@@ -1288,6 +1334,8 @@ export interface FileRouteTypes {
     | '/_app/organizations/$orgId'
     | '/_app/tickets/$ticketId'
     | '/api/agent/$'
+    | '/api/agent/speak'
+    | '/api/agent/stream'
     | '/api/auth/$'
     | '/api/jobs/run'
     | '/api/oauth/authorize'
@@ -1299,6 +1347,7 @@ export interface FileRouteTypes {
     | '/portal/tickets/$ticketId'
     | '/portal/tickets/new'
     | '/production/admin-portal/access'
+    | '/production/admin-portal/agent'
     | '/production/admin-portal/campaigns'
     | '/production/admin-portal/docs'
     | '/production/admin-portal/forms'
@@ -1369,6 +1418,8 @@ export interface RootRouteChildren {
   ProductionUserPortalRoute: typeof ProductionUserPortalRouteWithChildren
   ProductionIndexRoute: typeof ProductionIndexRoute
   ApiAgentSplatRoute: typeof ApiAgentSplatRoute
+  ApiAgentSpeakRoute: typeof ApiAgentSpeakRoute
+  ApiAgentStreamRoute: typeof ApiAgentStreamRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiJobsRunRoute: typeof ApiJobsRunRoute
   ApiOauthAuthorizeRoute: typeof ApiOauthAuthorizeRoute
@@ -1432,6 +1483,13 @@ declare module '@tanstack/react-router' {
       path: '/access'
       fullPath: '/access'
       preLoaderRoute: typeof AppAccessRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/agent': {
+      id: '/_app/agent'
+      path: '/agent'
+      fullPath: '/agent'
+      preLoaderRoute: typeof AppAgentRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/campaigns': {
@@ -1728,6 +1786,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAgentSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/agent/speak': {
+      id: '/api/agent/speak'
+      path: '/api/agent/speak'
+      fullPath: '/api/agent/speak'
+      preLoaderRoute: typeof ApiAgentSpeakRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/agent/stream': {
+      id: '/api/agent/stream'
+      path: '/api/agent/stream'
+      fullPath: '/api/agent/stream'
+      preLoaderRoute: typeof ApiAgentStreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -1831,6 +1903,13 @@ declare module '@tanstack/react-router' {
       path: '/access'
       fullPath: '/production/admin-portal/access'
       preLoaderRoute: typeof ProductionAdminPortalAccessRouteImport
+      parentRoute: typeof ProductionAdminPortalRoute
+    }
+    '/production/admin-portal/agent': {
+      id: '/production/admin-portal/agent'
+      path: '/agent'
+      fullPath: '/production/admin-portal/agent'
+      preLoaderRoute: typeof ProductionAdminPortalAgentRouteImport
       parentRoute: typeof ProductionAdminPortalRoute
     }
     '/production/admin-portal/campaigns': {
@@ -2146,6 +2225,7 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppAccessRoute: typeof AppAccessRoute
+  AppAgentRoute: typeof AppAgentRoute
   AppCampaignsRoute: typeof AppCampaignsRoute
   AppDashboardRoute: typeof AppDashboardRoute
   AppDocsRoute: typeof AppDocsRoute
@@ -2169,6 +2249,7 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppAccessRoute: AppAccessRoute,
+  AppAgentRoute: AppAgentRoute,
   AppCampaignsRoute: AppCampaignsRoute,
   AppDashboardRoute: AppDashboardRoute,
   AppDocsRoute: AppDocsRoute,
@@ -2245,6 +2326,7 @@ const PortalRouteWithChildren =
 
 interface ProductionAdminPortalRouteChildren {
   ProductionAdminPortalAccessRoute: typeof ProductionAdminPortalAccessRoute
+  ProductionAdminPortalAgentRoute: typeof ProductionAdminPortalAgentRoute
   ProductionAdminPortalCampaignsRoute: typeof ProductionAdminPortalCampaignsRoute
   ProductionAdminPortalDocsRoute: typeof ProductionAdminPortalDocsRoute
   ProductionAdminPortalFormsRoute: typeof ProductionAdminPortalFormsRoute
@@ -2268,6 +2350,7 @@ interface ProductionAdminPortalRouteChildren {
 
 const ProductionAdminPortalRouteChildren: ProductionAdminPortalRouteChildren = {
   ProductionAdminPortalAccessRoute: ProductionAdminPortalAccessRoute,
+  ProductionAdminPortalAgentRoute: ProductionAdminPortalAgentRoute,
   ProductionAdminPortalCampaignsRoute: ProductionAdminPortalCampaignsRoute,
   ProductionAdminPortalDocsRoute: ProductionAdminPortalDocsRoute,
   ProductionAdminPortalFormsRoute: ProductionAdminPortalFormsRoute,
@@ -2372,6 +2455,8 @@ const rootRouteChildren: RootRouteChildren = {
   ProductionUserPortalRoute: ProductionUserPortalRouteWithChildren,
   ProductionIndexRoute: ProductionIndexRoute,
   ApiAgentSplatRoute: ApiAgentSplatRoute,
+  ApiAgentSpeakRoute: ApiAgentSpeakRoute,
+  ApiAgentStreamRoute: ApiAgentStreamRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiJobsRunRoute: ApiJobsRunRoute,
   ApiOauthAuthorizeRoute: ApiOauthAuthorizeRoute,

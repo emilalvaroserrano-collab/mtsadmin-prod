@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ergo voice</title>
+  </head>
+  <body>
+    <script type="module">
+      import { engine, localFetch } from "./engine.js";
+
+      const MODELS = "https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/ab25a556ef61a9ce6a4ea8d102e649b4dc06e507/web/";
+      let starting = null;
+
+      function boot() {
+        starting ??= engine.init(
+          (progress) => {
+            parent.postMessage({ type: "ergo-progress", ...progress }, location.origin);
+          },
+          { base: MODELS },
+        );
+        return starting;
+      }
+
+      window.addEventListener("message", async (event) => {
+        if (event.origin !== location.origin) return;
+        const data = event.data;
+        if (!data || data.type !== "ergo-speak" || !event.source) return;
+        try {
+          await boot();
+          const listed = await localFetch("/v2/speakers").then((response) => response.json());
+          const voice = typeof data.voice === "string" && data.voice.startsWith("default_") ? data.voice : listed.speakers?.[0]?.id;
+          if (!voice) throw new Error("Ergo has no voice loaded.");
+          const response = await localFetch("/v1/audio/speech", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              model: "ergo-v3",
+              input: String(data.text || "").slice(0, 1500),
+              voice,
+              response_format: "wav",
+            }),
+          });
+          if (!response.ok) throw new Error((await response.text()) || "Ergo could not read that.");
+          const audio = await response.arrayBuffer();
+          event.source.postMessage({ type: "ergo-audio", id: data.id, audio }, location.origin, [audio]);
+        } catch (cause) {
+          event.source.postMessage({ type: "ergo-error", id: data.id, error: cause instanceof Error ? cause.message : "Ergo could not read that." }, location.origin);
+        }
+      });
+
+      parent.postMessage({ type: "ergo-ready" }, location.origin);
+    </script>
+  </body>
+</html>

@@ -894,9 +894,22 @@ async function acceptZendeskDirectoryUser(sql: Sql, remote: ZendeskDirectoryUser
 
 async function lookupZendeskEndUser(sql: Sql, email: string) {
   const settings = await readZendesk(sql);
-  const payload = await zendesk(settings, `/users/search.json?query=${encodeURIComponent(`type:user email:${email}`)}`);
-  const users = Array.isArray(payload.users) ? payload.users : [];
-  return users.map(directoryUser).find((user) => user && user.email === email) ?? null;
+  if (!supportConnected(settings)) return { user: null as ZendeskDirectoryUser | null, directoryBlocked: false };
+  try {
+    const payload = await zendesk(settings, `/users/search.json?query=${encodeURIComponent(`type:user email:${email}`)}`);
+    const users = Array.isArray(payload.users) ? payload.users : [];
+    return { user: users.map(directoryUser).find((user) => user && user.email === email) ?? null, directoryBlocked: false };
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (!/returned 403/.test(message)) throw cause;
+  }
+  try {
+    const me = directoryUser(obj((await zendesk(settings, "/users/me.json")).user));
+    if (me && me.email === email) return { user: me, directoryBlocked: true };
+  } catch {
+    /* the directory is still blocked */
+  }
+  return { user: null, directoryBlocked: true };
 }
 
 export async function runFullZendeskSync(sql: Sql, actor?: Actor) {
@@ -1269,15 +1282,21 @@ export const openPortalFromAuth = createServerFn({ method: "GET" })
     const zendeskAccount = await sql<Row>`select "accountId" from account where "userId" = ${context.userId} and "providerId" = 'zendesk' limit 1`;
     const zendeskUserId = zendeskAccount[0] ? s(zendeskAccount[0], "accountId") : "";
     let remote: ZendeskDirectoryUser | null = null;
+    let directoryBlocked = false;
     try {
-      remote = await lookupZendeskEndUser(sql, email);
+      const lookup = await lookupZendeskEndUser(sql, email);
+      remote = lookup.user;
+      directoryBlocked = lookup.directoryBlocked;
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : "Zendesk lookup failed.";
-      throw new Error(`Zendesk is connected, but this account could not be read. ${detail}`);
+      throw new Error(`Zendesk is connected, but this account could not be read. ${detail.replace(/\{[\s\S]*$/, "").trim()}`);
     }
     if (remote) await acceptZendeskDirectoryUser(sql, remote);
     const existing = await sql<Row>`select id, zendesk_user_id from shop_customers where lower(email) = ${email} limit 1`;
     if (!remote && !staff[0] && !zendeskUserId && !(existing[0] && s(existing[0], "zendesk_user_id"))) {
+      if (directoryBlocked) {
+        throw new Error("Zendesk is connected as an end user, so it cannot read the people directory. Add an admin API token under Zendesk settings, then sign in again.");
+      }
       throw new Error("This portal is invite only. Ask MTS to add this email in Zendesk, then sign in again.");
     }
     if (!existing[0]) {
@@ -4840,7 +4859,7 @@ export const shopLogin = createServerFn({ method: "POST" })
     const rows = await sql<Row>`select * from shop_customers where email = ${data.email}`;
     const row = rows[0];
     if (!row) {
-      const remote = await lookupZendeskEndUser(sql, data.email).catch(() => null);
+      const remote = (await lookupZendeskEndUser(sql, data.email).catch(() => null))?.user ?? null;
       if (remote) {
         await acceptZendeskDirectoryUser(sql, remote);
         throw new Error("This email is invited from Zendesk. Sign in from the portal login with that same email.");
@@ -4930,7 +4949,7 @@ export const getPortalSession = createServerFn({ method: "GET" })
     const sql = await getSql();
     const row = await shopByToken(sql, data);
     if (!row) return null;
-    const remote = await lookupZendeskEndUser(sql, s(row, "email")).catch(() => null);
+    const remote = (await lookupZendeskEndUser(sql, s(row, "email")).catch(() => null))?.user ?? null;
     if (remote) await acceptZendeskDirectoryUser(sql, remote);
     const settings = await readZendesk(sql);
     if (supportConnected(settings)) {

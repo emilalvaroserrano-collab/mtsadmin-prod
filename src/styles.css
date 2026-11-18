@@ -261,14 +261,21 @@
   .shop-card:hover { transform: translateY(-4px); box-shadow: 0 16px 36px rgba(0, 57, 112, 0.12); }
 }
 
-.admin-main {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  margin-inline: 0;
-  padding-inline: 1rem;
-  overflow-x: clip;
+.admin-main .mts-provider-card,
+.admin-main .mts-provider-card .mts-provider-key {
+  height: auto;
+  overflow: visible;
+}
+
+.admin-main .mts-provider-card input,
+.admin-main .mts-provider-card button {
+  max-width: none;
+  overflow: visible;
+}
+
+.admin-main.admin-agent {
+  padding: 0;
+  overflow: hidden;
 }
 
 @media (min-width: 640px) {

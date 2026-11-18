@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PortalAtmosphere } from "@/components/portal-atmosphere";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
+  Bot,
   Building2,
   Bell,
   BookOpen,
@@ -35,6 +36,7 @@ import { Boot, Input } from "./ui";
 
 const NAV = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, exact: true, group: "Work" },
+  { to: "/agent", label: "MTS Agent", icon: Bot, group: "Work" },
   { to: "/notifications", label: "Notifications", icon: Bell, group: "Work" },
   { to: "/tickets", label: "Tickets", icon: Ticket, group: "Work" },
   { to: "/orders", label: "Orders", icon: ClipboardList, group: "Work" },
@@ -128,8 +130,8 @@ export function Shell({ children }: { children: ReactNode }) {
 
   function Nav({ compact }: { compact: boolean }) {
     return (
-      <div className="flex h-full flex-col bg-surface/80 backdrop-blur">
-        <div className={compact ? "flex h-16 shrink-0 items-center justify-center border-b border-line px-2" : "flex h-16 shrink-0 items-center gap-3 border-b border-line px-4"}>
+      <div className="flex h-full min-h-0 flex-col bg-surface/80 backdrop-blur">
+        <div className={compact ? "flex h-16 shrink-0 items-center justify-center border-b border-line bg-surface/95 px-2" : "flex h-16 shrink-0 items-center gap-3 border-b border-line bg-surface/95 px-4"}>
           <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-ink text-xs font-semibold tracking-wide text-white">MT</span>
           {compact ? null : (
             <>
@@ -148,7 +150,7 @@ export function Shell({ children }: { children: ReactNode }) {
             </>
           )}
         </div>
-        <nav className={compact ? "flex flex-1 flex-col gap-2 overflow-y-auto px-2 py-3" : "flex flex-1 flex-col gap-4 overflow-y-auto px-3 py-4"} aria-label="Admin">
+        <nav className={compact ? "flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 py-3" : "flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 py-4"} aria-label="Admin">
           {compact ? (
             <button
               type="button"
@@ -186,7 +188,11 @@ export function Shell({ children }: { children: ReactNode }) {
                             : "flex h-11 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-ink"
                       }
                     >
-                      <Icon className="size-4 shrink-0" strokeWidth={1.75} />
+                      {item.to === "/agent" ? (
+                        <img src="/mts-agent.gif" alt="" className="size-5 shrink-0 rounded-full object-cover" />
+                      ) : (
+                        <Icon className="size-4 shrink-0" strokeWidth={1.75} />
+                      )}
                       {compact ? null : <span className="min-w-0 flex-1 truncate">{item.label}</span>}
                       {!compact && count != null && (item.to !== "/notifications" || count > 0) ? (
                         <span className={active ? "rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums" : "rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-ink"}>
@@ -222,7 +228,7 @@ export function Shell({ children }: { children: ReactNode }) {
             </div>
           ))}
         </nav>
-        <div className={compact ? "flex justify-center border-t border-line px-2 py-3" : "border-t border-line px-4 py-3"}>
+        <div className={compact ? "mt-auto flex shrink-0 justify-center border-t border-line bg-surface/95 px-2 py-3" : "mt-auto shrink-0 border-t border-line bg-surface/95 px-4 py-3"}>
           <p className={compact ? "flex items-center" : "flex items-center gap-2 text-xs font-medium text-ink"} title={info?.zendeskConnected ? "Zendesk connected" : "Zendesk needs a client"}>
             <span className={info?.zendeskConnected ? "size-2 rounded-full bg-good" : "size-2 rounded-full bg-warn"} />
             {compact ? null : info?.zendeskConnected ? "Zendesk connected" : "Zendesk needs a client"}
@@ -234,10 +240,10 @@ export function Shell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="portal-stage min-h-screen text-ink">
+    <div className="portal-stage min-h-screen text-ink md:h-dvh md:overflow-hidden">
       <PortalAtmosphere />
-      <div className={collapsed ? "min-h-screen md:grid md:grid-cols-[4.5rem_minmax(0,1fr)]" : "min-h-screen md:grid md:grid-cols-[16.5rem_minmax(0,1fr)]"}>
-      <aside className="hidden border-r border-line md:sticky md:top-0 md:z-30 md:block md:h-dvh md:self-start md:overflow-hidden"><Nav compact={collapsed} /></aside>
+      <div className={collapsed ? "min-h-screen md:grid md:h-dvh md:grid-cols-[4.5rem_minmax(0,1fr)] md:overflow-hidden" : "min-h-screen md:grid md:h-dvh md:grid-cols-[16.5rem_minmax(0,1fr)] md:overflow-hidden"}>
+      <aside className="hidden h-dvh overflow-hidden border-r border-line md:block"><Nav compact={collapsed} /></aside>
       {more ? (
         <div className="fixed inset-0 z-40 md:hidden">
           <button className="absolute inset-0 bg-ink/40" aria-label="Close menu" onClick={() => setMore(false)} />
@@ -259,7 +265,11 @@ export function Shell({ children }: { children: ReactNode }) {
                     to={adminHref(path, item.to) as "/dashboard"}
                     className={active ? "grid min-h-20 content-center justify-items-center gap-1 rounded-2xl bg-ink px-2 py-3 text-center text-white" : "grid min-h-20 content-center justify-items-center gap-1 rounded-2xl bg-surface-2 px-2 py-3 text-center text-ink"}
                   >
-                    <Icon className="size-5" strokeWidth={1.75} />
+                    {item.to === "/agent" ? (
+                      <img src="/mts-agent.gif" alt="" className="size-6 rounded-full object-cover" />
+                    ) : (
+                      <Icon className="size-5" strokeWidth={1.75} />
+                    )}
                     <span className="text-[12px] font-medium leading-tight">{item.label}</span>
                     {count != null ? <span className="text-[11px] tabular-nums opacity-70">{count}</span> : null}
                   </Link>
@@ -278,7 +288,7 @@ export function Shell({ children }: { children: ReactNode }) {
           </div>
         </div>
       ) : null}
-      <div className="grid min-h-screen min-w-0 grid-rows-[auto_minmax(0,1fr)]">
+      <div className="grid min-h-screen min-w-0 grid-rows-[auto_minmax(0,1fr)] md:h-dvh md:min-h-0 md:overflow-y-auto">
         <header className="sticky top-0 z-20 border-b border-line bg-surface/80 backdrop-blur">
           <div className="grid h-16 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-3 md:grid-cols-[auto_minmax(0,1fr)_auto] md:gap-3 md:px-5">
             <div className="min-w-0 md:hidden">
@@ -354,7 +364,7 @@ export function Shell({ children }: { children: ReactNode }) {
             </p>
           ) : null}
         </header>
-        <div className="admin-main grid w-full min-w-0 max-w-full content-start py-5 pb-[max(6.5rem,env(safe-area-inset-bottom))] md:pb-6">{children}</div>
+        <div className={path === "/agent" || path.endsWith("/admin-portal/agent") ? "admin-main admin-agent flex min-h-0 w-full min-w-0 max-w-full flex-col overflow-hidden md:h-[calc(100dvh-4rem)]" : "admin-main grid w-full min-w-0 max-w-full content-start py-5 pb-[max(6.5rem,env(safe-area-inset-bottom))] md:pb-6"}>{children}</div>
         <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line bg-surface/80 px-1 pt-1 backdrop-blur md:hidden" style={{ paddingBottom: "max(0.35rem, env(safe-area-inset-bottom))" }} aria-label="Admin">
           {MOBILE_TABS.map((to) => {
             const item = NAV.find((entry) => entry.to === to);

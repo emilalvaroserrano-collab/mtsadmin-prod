@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { Bell, Building2, House, LayoutDashboard, LogOut, Menu, MessageSquareWarning, Package, Receipt, Settings, ShoppingBag, Ticket, X } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { signOut } from "@/lib/auth/client";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { getSessionHome, listCustomerNotices } from "@/lib/portal/api";
@@ -14,9 +14,9 @@ import { PortalAtmosphere } from "@/components/portal-atmosphere";
 import { SarahHeaderButton, SarahWidget } from "@/components/sarah-widget";
 
 const NAV = [
+  { to: "/portal", label: "Home", icon: House, exact: true, guide: "home" },
   { to: "/portal/tickets", label: "Tickets", icon: Ticket, guide: "tickets" },
   { to: "/portal/shop", label: "Order", icon: ShoppingBag, guide: "order", also: ["/portal/checkout", "/portal/product"] },
-  { to: "/portal", label: "Home", icon: House, exact: true, guide: "home" },
   { to: "/portal/billing", label: "Billing", icon: Receipt, guide: "billing" },
   { to: "/portal/account", label: "Account", icon: Settings, guide: "account" },
   { to: "/portal/orders", label: "Orders", icon: Package, guide: "orders" },
@@ -24,7 +24,47 @@ const NAV = [
   { to: "/portal/organization", label: "Organization", icon: Building2, guide: "organization" },
 ] as const;
 
-const MOBILE_TABS = NAV.slice(0, 5);
+type TabTo = (typeof NAV)[number]["to"];
+const TAB_ORDER_KEY = "mts-portal-tab-order";
+
+function defaultOrder(): TabTo[] {
+  return NAV.map((item) => item.to);
+}
+
+function readOrder(): TabTo[] {
+  if (typeof window === "undefined") return defaultOrder();
+  try {
+    const saved = JSON.parse(localStorage.getItem(TAB_ORDER_KEY) || "[]");
+    if (!Array.isArray(saved)) return defaultOrder();
+    const known = new Set<string>(defaultOrder());
+    const next = saved.filter((item): item is TabTo => typeof item === "string" && known.has(item));
+    for (const item of defaultOrder()) if (!next.includes(item)) next.push(item);
+    return next;
+  } catch {
+    return defaultOrder();
+  }
+}
+
+function useTabOrder() {
+  const [order, setOrder] = useState<TabTo[]>(defaultOrder);
+  const drag = useRef<TabTo | null>(null);
+  useEffect(() => {
+    setOrder(readOrder());
+  }, []);
+  function move(target: TabTo) {
+    const from = drag.current;
+    if (!from || from === target) return;
+    setOrder((current) => {
+      const next = current.filter((item) => item !== from);
+      const index = next.indexOf(target);
+      next.splice(index < 0 ? next.length : index, 0, from);
+      localStorage.setItem(TAB_ORDER_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+  const tabs = order.map((to) => NAV.find((item) => item.to === to)).filter((item): item is (typeof NAV)[number] => Boolean(item));
+  return { tabs, drag, move };
+}
 
 function portalHref(path: string, to: string) {
   const base = path.startsWith("/production/user-portal") ? "/production/user-portal" : "/portal";
@@ -72,6 +112,8 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const current = NAV.find((item) => isActive(path, item));
   const name = user?.displayName || session.data?.customer.name || "there";
   const count = cart.reduce((sum, line) => sum + line.quantity, 0);
+  const { tabs, drag, move } = useTabOrder();
+  const mobileTabs = tabs.slice(0, 5);
 
   return (
     <div className="portal-stage grid min-h-dvh grid-rows-[auto_minmax(0,1fr)] text-ink">
@@ -83,11 +125,21 @@ export function PortalShell({ children }: { children: ReactNode }) {
             <span className="truncate text-sm font-semibold">{current?.label ?? "MTS"}</span>
           </Link>
           <nav className="hidden min-w-0 items-center gap-1 overflow-x-auto md:col-start-1 md:flex" aria-label="Customer">
-            {NAV.map((item) => {
+            {tabs.map((item) => {
               const href = portalHref(path, item.to);
               const active = isActive(path, item);
               return (
-                <Link key={item.to} to={href as "/portal"} data-guide={item.guide} aria-current={active ? "page" : undefined} className={active ? "shrink-0 rounded-lg bg-ink px-3 py-2 text-sm text-white" : "shrink-0 rounded-lg px-3 py-2 text-sm text-ink hover:bg-surface-2"}>
+                <Link
+                  key={item.to}
+                  to={href as "/portal"}
+                  draggable
+                  onDragStart={() => { drag.current = item.to; }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => move(item.to)}
+                  data-guide={item.guide}
+                  aria-current={active ? "page" : undefined}
+                  className={active ? "shrink-0 cursor-grab rounded-lg bg-ink px-3 py-2 text-sm text-white" : "shrink-0 cursor-grab rounded-lg px-3 py-2 text-sm text-ink hover:bg-surface-2"}
+                >
                   {item.label}
                 </Link>
               );
@@ -135,10 +187,23 @@ export function PortalShell({ children }: { children: ReactNode }) {
               </div>
               <button type="button" aria-label="Close menu" onClick={() => setMenu(false)} className="grid size-10 shrink-0 place-items-center"><X className="size-5" /></button>
             </div>
-            {NAV.map((item) => {
+            {tabs.map((item) => {
               const active = isActive(path, item);
               return (
-                <Link key={item.to} to={portalHref(path, item.to) as "/portal"} data-guide={item.guide} aria-current={active ? "page" : undefined} onClick={() => setMenu(false)} className={active ? "rounded-xl bg-ink px-3 py-3 text-sm font-medium text-white" : "rounded-xl px-3 py-3 text-sm font-medium hover:bg-surface-2"}>{item.label}</Link>
+                <Link
+                  key={item.to}
+                  to={portalHref(path, item.to) as "/portal"}
+                  draggable
+                  onDragStart={() => { drag.current = item.to; }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => move(item.to)}
+                  data-guide={item.guide}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => setMenu(false)}
+                  className={active ? "cursor-grab rounded-xl bg-ink px-3 py-3 text-sm font-medium text-white" : "cursor-grab rounded-xl px-3 py-3 text-sm font-medium hover:bg-surface-2"}
+                >
+                  {item.label}
+                </Link>
               );
             })}
             <Link to={portalHref(path, "/portal/notifications") as "/portal"} onClick={() => setMenu(false)} className="flex items-center justify-between rounded-xl px-3 py-3 text-sm font-medium hover:bg-surface-2">
@@ -151,7 +216,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
       ) : null}
       <SarahWidget />
       <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line bg-surface px-1 pt-1 md:hidden" style={{ paddingBottom: "max(0.35rem, env(safe-area-inset-bottom))" }} aria-label="Portal">
-        {MOBILE_TABS.map((item) => {
+        {mobileTabs.map((item) => {
           const Icon = item.icon;
           const href = portalHref(path, item.to);
           const active = isActive(path, item);
