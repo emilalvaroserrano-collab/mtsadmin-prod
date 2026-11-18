@@ -9575,6 +9575,633 @@ var base64Url = {
 	}
 };
 //#endregion
+//#region node_modules/better-call/node_modules/@better-auth/utils/dist/index.mjs
+function getWebcryptoSubtle() {
+	const cr = typeof globalThis !== "undefined" && globalThis.crypto;
+	if (cr && typeof cr.subtle === "object" && cr.subtle != null) return cr.subtle;
+	throw new Error("crypto.subtle must be defined");
+}
+//#endregion
+//#region node_modules/better-call/dist/crypto.mjs
+var algorithm = {
+	name: "HMAC",
+	hash: "SHA-256"
+};
+var getCryptoKey = async (secret) => {
+	const secretBuf = typeof secret === "string" ? new TextEncoder().encode(secret) : secret;
+	return await getWebcryptoSubtle().importKey("raw", secretBuf, algorithm, false, ["sign", "verify"]);
+};
+var verifySignature = async (base64Signature, value, secret) => {
+	try {
+		const signatureBinStr = atob(base64Signature);
+		const signature = new Uint8Array(signatureBinStr.length);
+		for (let i = 0, len = signatureBinStr.length; i < len; i++) signature[i] = signatureBinStr.charCodeAt(i);
+		return await getWebcryptoSubtle().verify(algorithm, secret, signature, new TextEncoder().encode(value));
+	} catch {
+		return false;
+	}
+};
+var makeSignature = async (value, secret) => {
+	const key = await getCryptoKey(secret);
+	const signature = await getWebcryptoSubtle().sign(algorithm.name, key, new TextEncoder().encode(value));
+	return btoa(String.fromCharCode(...new Uint8Array(signature)));
+};
+var signCookieValue = async (value, secret) => {
+	const signature = await makeSignature(value, secret);
+	value = `${value}.${signature}`;
+	value = encodeURIComponent(value);
+	return value;
+};
+//#endregion
+//#region node_modules/better-call/dist/utils.mjs
+var jsonContentTypeRegex = /^application\/([a-z0-9.+-]*\+)?json/i;
+async function getBody(request, allowedMediaTypes) {
+	const contentType = request.headers.get("content-type") || "";
+	const normalizedContentType = contentType.toLowerCase();
+	if (!request.body) return;
+	if (allowedMediaTypes && allowedMediaTypes.length > 0) {
+		if (!allowedMediaTypes.some((allowed) => {
+			const normalizedContentTypeBase = normalizedContentType.split(";")[0].trim();
+			const normalizedAllowed = allowed.toLowerCase().trim();
+			return normalizedContentTypeBase === normalizedAllowed || normalizedContentTypeBase.includes(normalizedAllowed);
+		})) {
+			if (!normalizedContentType) throw new APIError$1(415, {
+				message: `Content-Type is required. Allowed types: ${allowedMediaTypes.join(", ")}`,
+				code: "UNSUPPORTED_MEDIA_TYPE"
+			});
+			throw new APIError$1(415, {
+				message: `Content-Type "${contentType}" is not allowed. Allowed types: ${allowedMediaTypes.join(", ")}`,
+				code: "UNSUPPORTED_MEDIA_TYPE"
+			});
+		}
+	}
+	if (jsonContentTypeRegex.test(normalizedContentType)) try {
+		return await request.json();
+	} catch (e) {
+		if (e instanceof SyntaxError) throw new APIError$1(400, {
+			message: "Invalid JSON in request body",
+			code: "BAD_REQUEST"
+		});
+		throw e;
+	}
+	if (normalizedContentType.includes("application/x-www-form-urlencoded")) {
+		const formData = await request.formData();
+		const result = {};
+		formData.forEach((value, key) => {
+			result[key] = value.toString();
+		});
+		return result;
+	}
+	if (normalizedContentType.includes("multipart/form-data")) {
+		const formData = await request.formData();
+		const result = {};
+		formData.forEach((value, key) => {
+			result[key] = value;
+		});
+		return result;
+	}
+	if (normalizedContentType.includes("text/plain")) return await request.text();
+	if (normalizedContentType.includes("application/octet-stream")) return await request.arrayBuffer();
+	if (normalizedContentType.includes("application/pdf") || normalizedContentType.includes("image/") || normalizedContentType.includes("video/")) return await request.blob();
+	if (normalizedContentType.includes("application/stream") || request.body instanceof ReadableStream) return request.body;
+	return await request.text();
+}
+function isAPIError$1(error) {
+	return error instanceof APIError$1 || error?.name === "APIError";
+}
+function tryDecode(str) {
+	try {
+		return str.includes("%") ? decodeURIComponent(str) : str;
+	} catch {
+		return str;
+	}
+}
+async function tryCatch(promise) {
+	try {
+		return {
+			data: await promise,
+			error: null
+		};
+	} catch (error) {
+		return {
+			data: null,
+			error
+		};
+	}
+}
+/**
+* Check if an object is a `Request`
+* - `instanceof`: works for native Request instances
+* - `toString`: handles where instanceof check fails but the object is still a valid Request
+*/
+function isRequest(obj) {
+	return obj instanceof Request || Object.prototype.toString.call(obj) === "[object Request]";
+}
+//#endregion
+//#region node_modules/better-call/dist/cookies.mjs
+var getCookieKey = (key, prefix) => {
+	let finalKey = key;
+	if (prefix) if (prefix === "secure") finalKey = "__Secure-" + key;
+	else if (prefix === "host") finalKey = "__Host-" + key;
+	else return;
+	return finalKey;
+};
+/**
+* Parse an HTTP Cookie header string and returning an object of all cookie
+* name-value pairs.
+*
+* Inspired by https://github.com/unjs/cookie-es/blob/main/src/cookie/parse.ts
+*
+* @param str the string representing a `Cookie` header value
+*/
+function parseCookies(str) {
+	if (typeof str !== "string") throw new TypeError("argument str must be a string");
+	const cookies = /* @__PURE__ */ new Map();
+	let index = 0;
+	while (index < str.length) {
+		const eqIdx = str.indexOf("=", index);
+		if (eqIdx === -1) break;
+		let endIdx = str.indexOf(";", index);
+		if (endIdx === -1) endIdx = str.length;
+		else if (endIdx < eqIdx) {
+			index = str.lastIndexOf(";", eqIdx - 1) + 1;
+			continue;
+		}
+		const key = str.slice(index, eqIdx).trim();
+		if (!cookies.has(key)) {
+			let val = str.slice(eqIdx + 1, endIdx).trim();
+			if (val.codePointAt(0) === 34) val = val.slice(1, -1);
+			cookies.set(key, tryDecode(val));
+		}
+		index = endIdx + 1;
+	}
+	return cookies;
+}
+var _serialize = (key, value, opt = {}) => {
+	let cookie;
+	if (opt?.prefix === "secure") cookie = `${`__Secure-${key}`}=${value}`;
+	else if (opt?.prefix === "host") cookie = `${`__Host-${key}`}=${value}`;
+	else cookie = `${key}=${value}`;
+	if (key.startsWith("__Secure-") && !opt.secure) opt.secure = true;
+	if (key.startsWith("__Host-")) {
+		if (!opt.secure) opt.secure = true;
+		if (opt.path !== "/") opt.path = "/";
+		if (opt.domain) opt.domain = void 0;
+	}
+	if (opt && typeof opt.maxAge === "number" && opt.maxAge >= 0) {
+		if (opt.maxAge > 3456e4) throw new Error("Cookies Max-Age SHOULD NOT be greater than 400 days (34560000 seconds) in duration.");
+		cookie += `; Max-Age=${Math.floor(opt.maxAge)}`;
+	}
+	if (opt.domain && opt.prefix !== "host") cookie += `; Domain=${opt.domain}`;
+	if (opt.path) cookie += `; Path=${opt.path}`;
+	if (opt.expires) {
+		if (opt.expires.getTime() - Date.now() > 3456e7) throw new Error("Cookies Expires SHOULD NOT be greater than 400 days (34560000 seconds) in the future.");
+		cookie += `; Expires=${opt.expires.toUTCString()}`;
+	}
+	if (opt.httpOnly) cookie += "; HttpOnly";
+	if (opt.secure) cookie += "; Secure";
+	if (opt.sameSite) cookie += `; SameSite=${opt.sameSite.charAt(0).toUpperCase() + opt.sameSite.slice(1)}`;
+	if (opt.partitioned) {
+		if (!opt.secure) opt.secure = true;
+		cookie += "; Partitioned";
+	}
+	return cookie;
+};
+var serializeCookie = (key, value, opt) => {
+	value = encodeURIComponent(value);
+	return _serialize(key, value, opt);
+};
+var serializeSignedCookie = async (key, value, secret, opt) => {
+	value = await signCookieValue(value, secret);
+	return _serialize(key, value, opt);
+};
+//#endregion
+//#region node_modules/better-call/dist/validator.mjs
+/**
+* Runs validation on body and query
+* @returns error and data object
+*/
+async function runValidation(options, context = {}) {
+	const request = {
+		body: context.body,
+		query: context.query
+	};
+	if (options.body) {
+		const result = await options.body["~standard"].validate(context.body);
+		if (result.issues) return {
+			data: null,
+			error: fromError(result.issues, "body")
+		};
+		request.body = result.value;
+	}
+	if (options.query) {
+		const result = await options.query["~standard"].validate(context.query);
+		if (result.issues) return {
+			data: null,
+			error: fromError(result.issues, "query")
+		};
+		request.query = result.value;
+	}
+	if (options.requireHeaders && !context.headers) return {
+		data: null,
+		error: {
+			message: "Headers is required",
+			issues: []
+		}
+	};
+	if (options.requireRequest && !context.request) return {
+		data: null,
+		error: {
+			message: "Request is required",
+			issues: []
+		}
+	};
+	return {
+		data: request,
+		error: null
+	};
+}
+function fromError(error, validating) {
+	return {
+		message: error.map((e) => {
+			return `[${e.path?.length ? `${validating}.` + e.path.map((x) => typeof x === "object" ? x.key : x).join(".") : validating}] ${e.message}`;
+		}).join("; "),
+		issues: error
+	};
+}
+//#endregion
+//#region node_modules/better-call/dist/context.mjs
+var createInternalContext = async (context, { options, path }) => {
+	const headers = new Headers();
+	let responseStatus = void 0;
+	const { data, error } = await runValidation(options, context);
+	if (error) throw new ValidationError$1(error.message, error.issues);
+	const requestHeaders = "headers" in context ? context.headers instanceof Headers ? context.headers : new Headers(context.headers) : "request" in context && isRequest(context.request) ? context.request.headers : null;
+	const requestCookies = requestHeaders?.get("cookie");
+	const parsedCookies = requestCookies ? parseCookies(requestCookies) : void 0;
+	const internalContext = {
+		...context,
+		body: data.body,
+		query: data.query,
+		path: context.path || path || "virtual:",
+		context: "context" in context && context.context ? context.context : {},
+		returned: void 0,
+		headers: context?.headers,
+		request: context?.request,
+		params: "params" in context ? context.params : void 0,
+		method: context.method ?? (Array.isArray(options.method) ? options.method[0] : options.method === "*" ? "GET" : options.method),
+		setHeader: (key, value) => {
+			headers.set(key, value);
+		},
+		getHeader: (key) => {
+			if (!requestHeaders) return null;
+			return requestHeaders.get(key);
+		},
+		getCookie: (key, prefix) => {
+			const finalKey = getCookieKey(key, prefix);
+			if (!finalKey) return null;
+			return parsedCookies?.get(finalKey) || null;
+		},
+		getSignedCookie: async (key, secret, prefix) => {
+			const finalKey = getCookieKey(key, prefix);
+			if (!finalKey) return null;
+			const value = parsedCookies?.get(finalKey);
+			if (!value) return null;
+			const signatureStartPos = value.lastIndexOf(".");
+			if (signatureStartPos < 1) return null;
+			const signedValue = value.substring(0, signatureStartPos);
+			const signature = value.substring(signatureStartPos + 1);
+			if (signature.length !== 44 || !signature.endsWith("=")) return null;
+			return await verifySignature(signature, signedValue, await getCryptoKey(secret)) ? signedValue : false;
+		},
+		setCookie: (key, value, options) => {
+			const cookie = serializeCookie(key, value, options);
+			headers.append("set-cookie", cookie);
+			return cookie;
+		},
+		setSignedCookie: async (key, value, secret, options) => {
+			const cookie = await serializeSignedCookie(key, value, secret, options);
+			headers.append("set-cookie", cookie);
+			return cookie;
+		},
+		redirect: (url) => {
+			headers.set("location", url);
+			return new APIError$1("FOUND", void 0, headers);
+		},
+		error: (status, body, headers) => {
+			return new APIError$1(status, body, headers);
+		},
+		setStatus: (status) => {
+			responseStatus = status;
+		},
+		json: (json, routerResponse) => {
+			if (!context.asResponse) return json;
+			return {
+				body: routerResponse?.body || json,
+				routerResponse,
+				_flag: "json"
+			};
+		},
+		responseHeaders: headers,
+		get responseStatus() {
+			return responseStatus;
+		}
+	};
+	for (const middleware of options.use || []) {
+		const response = await middleware({
+			...internalContext,
+			returnHeaders: true,
+			asResponse: false
+		});
+		if (response.response) Object.assign(internalContext.context, response.response);
+		/**
+		* Apply headers from the middleware to the endpoint headers
+		*/
+		if (response.headers) response.headers.forEach((value, key) => {
+			internalContext.responseHeaders.set(key, value);
+		});
+	}
+	return internalContext;
+};
+//#endregion
+//#region node_modules/better-call/dist/to-response.mjs
+function isJSONSerializable(value) {
+	if (value === void 0) return false;
+	const t = typeof value;
+	if (t === "string" || t === "number" || t === "boolean" || t === null) return true;
+	if (t !== "object") return false;
+	if (Array.isArray(value)) return true;
+	if (value.buffer) return false;
+	return value.constructor && value.constructor.name === "Object" || typeof value.toJSON === "function";
+}
+function safeStringify(obj) {
+	const parents = /* @__PURE__ */ new WeakMap();
+	const ids = /* @__PURE__ */ new WeakMap();
+	let id = 0;
+	const isAncestor = (value, holder) => {
+		let curr = holder;
+		while (curr) {
+			if (curr === value) return true;
+			curr = parents.get(curr);
+		}
+		return false;
+	};
+	return JSON.stringify(obj, function(_key, value) {
+		if (typeof value === "bigint") return value.toString();
+		if (typeof value === "object" && value !== null) {
+			if (isAncestor(value, this)) return `[Circular ref-${ids.get(value)}]`;
+			parents.set(value, this);
+			if (!ids.has(value)) ids.set(value, id++);
+		}
+		return value;
+	});
+}
+function isJSONResponse(value) {
+	if (!value || typeof value !== "object") return false;
+	return "_flag" in value && value._flag === "json";
+}
+/**
+* Headers that MUST be stripped when building an HTTP response from
+* arbitrary header input. These are request-only, hop-by-hop, or
+* transport-managed headers that cause protocol violations when present
+* on responses (e.g. Content-Length mismatch → net::ERR_CONTENT_LENGTH_MISMATCH).
+*
+* Sources:
+*   - RFC 9110 §10.1   (Request Context Fields)
+*   - RFC 9110 §7.6.1  (Connection / hop-by-hop)
+*   - RFC 9110 §11.6-7 (Authentication credentials)
+*   - RFC 9110 §12.5   (Content negotiation)
+*   - RFC 9110 §13.1   (Conditional request headers)
+*   - RFC 9110 §14.2   (Range requests)
+*   - RFC 6265 §5.4    (Cookie)
+*   - RFC 6454         (Origin)
+*/
+var REQUEST_ONLY_HEADERS = /* @__PURE__ */ new Set([
+	"host",
+	"user-agent",
+	"referer",
+	"from",
+	"expect",
+	"authorization",
+	"proxy-authorization",
+	"cookie",
+	"origin",
+	"accept-charset",
+	"accept-encoding",
+	"accept-language",
+	"if-match",
+	"if-none-match",
+	"if-modified-since",
+	"if-unmodified-since",
+	"if-range",
+	"range",
+	"max-forwards",
+	"connection",
+	"keep-alive",
+	"transfer-encoding",
+	"te",
+	"upgrade",
+	"trailer",
+	"proxy-connection",
+	"content-length"
+]);
+function stripRequestOnlyHeaders(headers) {
+	for (const name of REQUEST_ONLY_HEADERS) headers.delete(name);
+}
+/**
+* Copy headers from `source` into `target`. `Set-Cookie` is appended (one
+* header per cookie) because RFC 9110 §5.3 notes it cannot be combined
+* into a single comma-separated value; other headers are set (replace).
+*/
+function copyHeaders(target, source) {
+	if (!source) return;
+	for (const [key, value] of new Headers(source).entries()) if (key.toLowerCase() === "set-cookie") target.append(key, value);
+	else target.set(key, value);
+}
+function toResponse(data, init) {
+	if (data instanceof Response) {
+		if (init?.headers) {
+			const safeHeaders = new Headers(init.headers);
+			stripRequestOnlyHeaders(safeHeaders);
+			copyHeaders(data.headers, safeHeaders);
+		}
+		return data;
+	}
+	if (isJSONResponse(data)) {
+		const body = data.body;
+		const routerResponse = data.routerResponse;
+		if (routerResponse instanceof Response) return routerResponse;
+		const headers = new Headers();
+		copyHeaders(headers, routerResponse?.headers);
+		copyHeaders(headers, data.headers);
+		if (init?.headers) {
+			const safeHeaders = new Headers(init.headers);
+			stripRequestOnlyHeaders(safeHeaders);
+			copyHeaders(headers, safeHeaders);
+		}
+		headers.set("Content-Type", "application/json");
+		return new Response(JSON.stringify(body), {
+			...routerResponse,
+			headers,
+			status: data.status ?? init?.status ?? routerResponse?.status,
+			statusText: init?.statusText ?? routerResponse?.statusText
+		});
+	}
+	if (isAPIError$1(data)) return toResponse(data.body, {
+		status: init?.status ?? data.statusCode,
+		statusText: data.status.toString(),
+		headers: init?.headers || data.headers
+	});
+	let body = data;
+	const headers = new Headers(init?.headers);
+	stripRequestOnlyHeaders(headers);
+	if (!data) {
+		if (data === null) body = JSON.stringify(null);
+		headers.set("content-type", "application/json");
+	} else if (typeof data === "string") {
+		body = data;
+		headers.set("Content-Type", "text/plain");
+	} else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+		body = data;
+		headers.set("Content-Type", "application/octet-stream");
+	} else if (data instanceof Blob) {
+		body = data;
+		headers.set("Content-Type", data.type || "application/octet-stream");
+	} else if (data instanceof FormData) body = data;
+	else if (data instanceof URLSearchParams) {
+		body = data;
+		headers.set("Content-Type", "application/x-www-form-urlencoded");
+	} else if (data instanceof ReadableStream) {
+		body = data;
+		headers.set("Content-Type", "application/octet-stream");
+	} else if (isJSONSerializable(data)) {
+		body = safeStringify(data);
+		headers.set("Content-Type", "application/json");
+	}
+	return new Response(body, {
+		...init,
+		headers
+	});
+}
+//#endregion
+//#region node_modules/better-call/dist/endpoint.mjs
+function createEndpoint(pathOrOptions, handlerOrOptions, handlerOrNever) {
+	const path = typeof pathOrOptions === "string" ? pathOrOptions : void 0;
+	const options = typeof handlerOrOptions === "object" ? handlerOrOptions : pathOrOptions;
+	const handler = typeof handlerOrOptions === "function" ? handlerOrOptions : handlerOrNever;
+	if ((options.method === "GET" || options.method === "HEAD") && options.body) throw new BetterCallError("Body is not allowed with GET or HEAD methods");
+	if (path && /\/{2,}/.test(path)) throw new BetterCallError("Path cannot contain consecutive slashes");
+	const internalHandler = async (...inputCtx) => {
+		const context = inputCtx[0] || {};
+		const { data: internalContext, error: validationError } = await tryCatch(createInternalContext(context, {
+			options,
+			path
+		}));
+		if (validationError) {
+			if (!(validationError instanceof ValidationError$1)) throw validationError;
+			if (options.onValidationError) await options.onValidationError({
+				message: validationError.message,
+				issues: validationError.issues
+			});
+			throw new APIError$1(400, {
+				message: validationError.message,
+				code: "VALIDATION_ERROR"
+			});
+		}
+		const response = await handler(internalContext).catch(async (e) => {
+			if (isAPIError$1(e)) {
+				const onAPIError = options.onAPIError;
+				if (onAPIError) await onAPIError(e);
+				if (context.asResponse) return e;
+			}
+			throw e;
+		});
+		const headers = internalContext.responseHeaders;
+		const status = internalContext.responseStatus;
+		return context.asResponse ? toResponse(response, {
+			headers,
+			status
+		}) : context.returnHeaders ? context.returnStatus ? {
+			headers,
+			response,
+			status
+		} : {
+			headers,
+			response
+		} : context.returnStatus ? {
+			response,
+			status
+		} : response;
+	};
+	internalHandler.options = options;
+	internalHandler.path = path;
+	return internalHandler;
+}
+function combineMiddleware(local, configured) {
+	return [...local ?? [], ...configured ?? []];
+}
+createEndpoint.create = (opts) => {
+	function createConfiguredEndpoint(...args) {
+		if (args.length === 3) {
+			const [path, options, handler] = args;
+			return createEndpoint(path, {
+				...options,
+				use: combineMiddleware(options.use, opts?.use)
+			}, handler);
+		}
+		const [options, handler] = args;
+		return createEndpoint({
+			...options,
+			use: combineMiddleware(options.use, opts?.use)
+		}, handler);
+	}
+	return createConfiguredEndpoint;
+};
+//#endregion
+//#region node_modules/better-call/dist/middleware.mjs
+function createMiddleware(optionsOrHandler, handler) {
+	const internalHandler = async (inputCtx) => {
+		const context = inputCtx;
+		const _handler = typeof optionsOrHandler === "function" ? optionsOrHandler : handler;
+		const internalContext = await createInternalContext(context, {
+			options: typeof optionsOrHandler === "function" ? {} : optionsOrHandler,
+			path: "/"
+		});
+		if (!_handler) throw new Error("handler must be defined");
+		try {
+			const response = await _handler(internalContext);
+			const headers = internalContext.responseHeaders;
+			return context.returnHeaders ? {
+				headers,
+				response
+			} : response;
+		} catch (e) {
+			if (isAPIError$1(e)) Object.defineProperty(e, kAPIErrorHeaderSymbol, {
+				enumerable: false,
+				configurable: true,
+				get() {
+					return internalContext.responseHeaders;
+				}
+			});
+			throw e;
+		}
+	};
+	internalHandler.options = typeof optionsOrHandler === "function" ? {} : optionsOrHandler;
+	return internalHandler;
+}
+createMiddleware.create = (opts) => {
+	function fn(optionsOrHandler, handler) {
+		if (typeof optionsOrHandler === "function") return createMiddleware({ use: opts?.use }, optionsOrHandler);
+		if (!handler) throw new Error("Middleware handler is required");
+		return createMiddleware({
+			...optionsOrHandler,
+			method: "*",
+			use: [...opts?.use || [], ...optionsOrHandler.use || []]
+		}, handler);
+	}
+	return fn;
+};
+//#endregion
 //#region node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
 	const numericValues = Object.values(entries).filter((v) => typeof v === "number");
@@ -15092,647 +15719,6 @@ function superRefine(fn, params) {
 	return /* @__PURE__ */ _superRefine(fn, params);
 }
 //#endregion
-//#region node_modules/@better-auth/core/dist/utils/db.mjs
-/**
-* Filters output data by removing fields with the `returned: false` attribute.
-* This ensures sensitive fields are not exposed in API responses.
-*/
-function filterOutputFields(data, additionalFields) {
-	if (!data || !additionalFields) return data;
-	const returnFiltered = Object.entries(additionalFields).filter(([, { returned }]) => returned === false).map(([key]) => key);
-	return Object.entries(structuredClone(data)).filter(([key]) => !returnFiltered.includes(key)).reduce((acc, [key, value]) => ({
-		...acc,
-		[key]: value
-	}), {});
-}
-//#endregion
-//#region node_modules/better-call/node_modules/@better-auth/utils/dist/index.mjs
-function getWebcryptoSubtle() {
-	const cr = typeof globalThis !== "undefined" && globalThis.crypto;
-	if (cr && typeof cr.subtle === "object" && cr.subtle != null) return cr.subtle;
-	throw new Error("crypto.subtle must be defined");
-}
-//#endregion
-//#region node_modules/better-call/dist/crypto.mjs
-var algorithm = {
-	name: "HMAC",
-	hash: "SHA-256"
-};
-var getCryptoKey = async (secret) => {
-	const secretBuf = typeof secret === "string" ? new TextEncoder().encode(secret) : secret;
-	return await getWebcryptoSubtle().importKey("raw", secretBuf, algorithm, false, ["sign", "verify"]);
-};
-var verifySignature = async (base64Signature, value, secret) => {
-	try {
-		const signatureBinStr = atob(base64Signature);
-		const signature = new Uint8Array(signatureBinStr.length);
-		for (let i = 0, len = signatureBinStr.length; i < len; i++) signature[i] = signatureBinStr.charCodeAt(i);
-		return await getWebcryptoSubtle().verify(algorithm, secret, signature, new TextEncoder().encode(value));
-	} catch {
-		return false;
-	}
-};
-var makeSignature = async (value, secret) => {
-	const key = await getCryptoKey(secret);
-	const signature = await getWebcryptoSubtle().sign(algorithm.name, key, new TextEncoder().encode(value));
-	return btoa(String.fromCharCode(...new Uint8Array(signature)));
-};
-var signCookieValue = async (value, secret) => {
-	const signature = await makeSignature(value, secret);
-	value = `${value}.${signature}`;
-	value = encodeURIComponent(value);
-	return value;
-};
-//#endregion
-//#region node_modules/better-call/dist/utils.mjs
-var jsonContentTypeRegex = /^application\/([a-z0-9.+-]*\+)?json/i;
-async function getBody(request, allowedMediaTypes) {
-	const contentType = request.headers.get("content-type") || "";
-	const normalizedContentType = contentType.toLowerCase();
-	if (!request.body) return;
-	if (allowedMediaTypes && allowedMediaTypes.length > 0) {
-		if (!allowedMediaTypes.some((allowed) => {
-			const normalizedContentTypeBase = normalizedContentType.split(";")[0].trim();
-			const normalizedAllowed = allowed.toLowerCase().trim();
-			return normalizedContentTypeBase === normalizedAllowed || normalizedContentTypeBase.includes(normalizedAllowed);
-		})) {
-			if (!normalizedContentType) throw new APIError$1(415, {
-				message: `Content-Type is required. Allowed types: ${allowedMediaTypes.join(", ")}`,
-				code: "UNSUPPORTED_MEDIA_TYPE"
-			});
-			throw new APIError$1(415, {
-				message: `Content-Type "${contentType}" is not allowed. Allowed types: ${allowedMediaTypes.join(", ")}`,
-				code: "UNSUPPORTED_MEDIA_TYPE"
-			});
-		}
-	}
-	if (jsonContentTypeRegex.test(normalizedContentType)) try {
-		return await request.json();
-	} catch (e) {
-		if (e instanceof SyntaxError) throw new APIError$1(400, {
-			message: "Invalid JSON in request body",
-			code: "BAD_REQUEST"
-		});
-		throw e;
-	}
-	if (normalizedContentType.includes("application/x-www-form-urlencoded")) {
-		const formData = await request.formData();
-		const result = {};
-		formData.forEach((value, key) => {
-			result[key] = value.toString();
-		});
-		return result;
-	}
-	if (normalizedContentType.includes("multipart/form-data")) {
-		const formData = await request.formData();
-		const result = {};
-		formData.forEach((value, key) => {
-			result[key] = value;
-		});
-		return result;
-	}
-	if (normalizedContentType.includes("text/plain")) return await request.text();
-	if (normalizedContentType.includes("application/octet-stream")) return await request.arrayBuffer();
-	if (normalizedContentType.includes("application/pdf") || normalizedContentType.includes("image/") || normalizedContentType.includes("video/")) return await request.blob();
-	if (normalizedContentType.includes("application/stream") || request.body instanceof ReadableStream) return request.body;
-	return await request.text();
-}
-function isAPIError$1(error) {
-	return error instanceof APIError$1 || error?.name === "APIError";
-}
-function tryDecode(str) {
-	try {
-		return str.includes("%") ? decodeURIComponent(str) : str;
-	} catch {
-		return str;
-	}
-}
-async function tryCatch(promise) {
-	try {
-		return {
-			data: await promise,
-			error: null
-		};
-	} catch (error) {
-		return {
-			data: null,
-			error
-		};
-	}
-}
-/**
-* Check if an object is a `Request`
-* - `instanceof`: works for native Request instances
-* - `toString`: handles where instanceof check fails but the object is still a valid Request
-*/
-function isRequest(obj) {
-	return obj instanceof Request || Object.prototype.toString.call(obj) === "[object Request]";
-}
-//#endregion
-//#region node_modules/better-call/dist/cookies.mjs
-var getCookieKey = (key, prefix) => {
-	let finalKey = key;
-	if (prefix) if (prefix === "secure") finalKey = "__Secure-" + key;
-	else if (prefix === "host") finalKey = "__Host-" + key;
-	else return;
-	return finalKey;
-};
-/**
-* Parse an HTTP Cookie header string and returning an object of all cookie
-* name-value pairs.
-*
-* Inspired by https://github.com/unjs/cookie-es/blob/main/src/cookie/parse.ts
-*
-* @param str the string representing a `Cookie` header value
-*/
-function parseCookies(str) {
-	if (typeof str !== "string") throw new TypeError("argument str must be a string");
-	const cookies = /* @__PURE__ */ new Map();
-	let index = 0;
-	while (index < str.length) {
-		const eqIdx = str.indexOf("=", index);
-		if (eqIdx === -1) break;
-		let endIdx = str.indexOf(";", index);
-		if (endIdx === -1) endIdx = str.length;
-		else if (endIdx < eqIdx) {
-			index = str.lastIndexOf(";", eqIdx - 1) + 1;
-			continue;
-		}
-		const key = str.slice(index, eqIdx).trim();
-		if (!cookies.has(key)) {
-			let val = str.slice(eqIdx + 1, endIdx).trim();
-			if (val.codePointAt(0) === 34) val = val.slice(1, -1);
-			cookies.set(key, tryDecode(val));
-		}
-		index = endIdx + 1;
-	}
-	return cookies;
-}
-var _serialize = (key, value, opt = {}) => {
-	let cookie;
-	if (opt?.prefix === "secure") cookie = `${`__Secure-${key}`}=${value}`;
-	else if (opt?.prefix === "host") cookie = `${`__Host-${key}`}=${value}`;
-	else cookie = `${key}=${value}`;
-	if (key.startsWith("__Secure-") && !opt.secure) opt.secure = true;
-	if (key.startsWith("__Host-")) {
-		if (!opt.secure) opt.secure = true;
-		if (opt.path !== "/") opt.path = "/";
-		if (opt.domain) opt.domain = void 0;
-	}
-	if (opt && typeof opt.maxAge === "number" && opt.maxAge >= 0) {
-		if (opt.maxAge > 3456e4) throw new Error("Cookies Max-Age SHOULD NOT be greater than 400 days (34560000 seconds) in duration.");
-		cookie += `; Max-Age=${Math.floor(opt.maxAge)}`;
-	}
-	if (opt.domain && opt.prefix !== "host") cookie += `; Domain=${opt.domain}`;
-	if (opt.path) cookie += `; Path=${opt.path}`;
-	if (opt.expires) {
-		if (opt.expires.getTime() - Date.now() > 3456e7) throw new Error("Cookies Expires SHOULD NOT be greater than 400 days (34560000 seconds) in the future.");
-		cookie += `; Expires=${opt.expires.toUTCString()}`;
-	}
-	if (opt.httpOnly) cookie += "; HttpOnly";
-	if (opt.secure) cookie += "; Secure";
-	if (opt.sameSite) cookie += `; SameSite=${opt.sameSite.charAt(0).toUpperCase() + opt.sameSite.slice(1)}`;
-	if (opt.partitioned) {
-		if (!opt.secure) opt.secure = true;
-		cookie += "; Partitioned";
-	}
-	return cookie;
-};
-var serializeCookie = (key, value, opt) => {
-	value = encodeURIComponent(value);
-	return _serialize(key, value, opt);
-};
-var serializeSignedCookie = async (key, value, secret, opt) => {
-	value = await signCookieValue(value, secret);
-	return _serialize(key, value, opt);
-};
-//#endregion
-//#region node_modules/better-call/dist/validator.mjs
-/**
-* Runs validation on body and query
-* @returns error and data object
-*/
-async function runValidation(options, context = {}) {
-	const request = {
-		body: context.body,
-		query: context.query
-	};
-	if (options.body) {
-		const result = await options.body["~standard"].validate(context.body);
-		if (result.issues) return {
-			data: null,
-			error: fromError(result.issues, "body")
-		};
-		request.body = result.value;
-	}
-	if (options.query) {
-		const result = await options.query["~standard"].validate(context.query);
-		if (result.issues) return {
-			data: null,
-			error: fromError(result.issues, "query")
-		};
-		request.query = result.value;
-	}
-	if (options.requireHeaders && !context.headers) return {
-		data: null,
-		error: {
-			message: "Headers is required",
-			issues: []
-		}
-	};
-	if (options.requireRequest && !context.request) return {
-		data: null,
-		error: {
-			message: "Request is required",
-			issues: []
-		}
-	};
-	return {
-		data: request,
-		error: null
-	};
-}
-function fromError(error, validating) {
-	return {
-		message: error.map((e) => {
-			return `[${e.path?.length ? `${validating}.` + e.path.map((x) => typeof x === "object" ? x.key : x).join(".") : validating}] ${e.message}`;
-		}).join("; "),
-		issues: error
-	};
-}
-//#endregion
-//#region node_modules/better-call/dist/context.mjs
-var createInternalContext = async (context, { options, path }) => {
-	const headers = new Headers();
-	let responseStatus = void 0;
-	const { data, error } = await runValidation(options, context);
-	if (error) throw new ValidationError$1(error.message, error.issues);
-	const requestHeaders = "headers" in context ? context.headers instanceof Headers ? context.headers : new Headers(context.headers) : "request" in context && isRequest(context.request) ? context.request.headers : null;
-	const requestCookies = requestHeaders?.get("cookie");
-	const parsedCookies = requestCookies ? parseCookies(requestCookies) : void 0;
-	const internalContext = {
-		...context,
-		body: data.body,
-		query: data.query,
-		path: context.path || path || "virtual:",
-		context: "context" in context && context.context ? context.context : {},
-		returned: void 0,
-		headers: context?.headers,
-		request: context?.request,
-		params: "params" in context ? context.params : void 0,
-		method: context.method ?? (Array.isArray(options.method) ? options.method[0] : options.method === "*" ? "GET" : options.method),
-		setHeader: (key, value) => {
-			headers.set(key, value);
-		},
-		getHeader: (key) => {
-			if (!requestHeaders) return null;
-			return requestHeaders.get(key);
-		},
-		getCookie: (key, prefix) => {
-			const finalKey = getCookieKey(key, prefix);
-			if (!finalKey) return null;
-			return parsedCookies?.get(finalKey) || null;
-		},
-		getSignedCookie: async (key, secret, prefix) => {
-			const finalKey = getCookieKey(key, prefix);
-			if (!finalKey) return null;
-			const value = parsedCookies?.get(finalKey);
-			if (!value) return null;
-			const signatureStartPos = value.lastIndexOf(".");
-			if (signatureStartPos < 1) return null;
-			const signedValue = value.substring(0, signatureStartPos);
-			const signature = value.substring(signatureStartPos + 1);
-			if (signature.length !== 44 || !signature.endsWith("=")) return null;
-			return await verifySignature(signature, signedValue, await getCryptoKey(secret)) ? signedValue : false;
-		},
-		setCookie: (key, value, options) => {
-			const cookie = serializeCookie(key, value, options);
-			headers.append("set-cookie", cookie);
-			return cookie;
-		},
-		setSignedCookie: async (key, value, secret, options) => {
-			const cookie = await serializeSignedCookie(key, value, secret, options);
-			headers.append("set-cookie", cookie);
-			return cookie;
-		},
-		redirect: (url) => {
-			headers.set("location", url);
-			return new APIError$1("FOUND", void 0, headers);
-		},
-		error: (status, body, headers) => {
-			return new APIError$1(status, body, headers);
-		},
-		setStatus: (status) => {
-			responseStatus = status;
-		},
-		json: (json, routerResponse) => {
-			if (!context.asResponse) return json;
-			return {
-				body: routerResponse?.body || json,
-				routerResponse,
-				_flag: "json"
-			};
-		},
-		responseHeaders: headers,
-		get responseStatus() {
-			return responseStatus;
-		}
-	};
-	for (const middleware of options.use || []) {
-		const response = await middleware({
-			...internalContext,
-			returnHeaders: true,
-			asResponse: false
-		});
-		if (response.response) Object.assign(internalContext.context, response.response);
-		/**
-		* Apply headers from the middleware to the endpoint headers
-		*/
-		if (response.headers) response.headers.forEach((value, key) => {
-			internalContext.responseHeaders.set(key, value);
-		});
-	}
-	return internalContext;
-};
-//#endregion
-//#region node_modules/better-call/dist/to-response.mjs
-function isJSONSerializable(value) {
-	if (value === void 0) return false;
-	const t = typeof value;
-	if (t === "string" || t === "number" || t === "boolean" || t === null) return true;
-	if (t !== "object") return false;
-	if (Array.isArray(value)) return true;
-	if (value.buffer) return false;
-	return value.constructor && value.constructor.name === "Object" || typeof value.toJSON === "function";
-}
-function safeStringify(obj) {
-	const parents = /* @__PURE__ */ new WeakMap();
-	const ids = /* @__PURE__ */ new WeakMap();
-	let id = 0;
-	const isAncestor = (value, holder) => {
-		let curr = holder;
-		while (curr) {
-			if (curr === value) return true;
-			curr = parents.get(curr);
-		}
-		return false;
-	};
-	return JSON.stringify(obj, function(_key, value) {
-		if (typeof value === "bigint") return value.toString();
-		if (typeof value === "object" && value !== null) {
-			if (isAncestor(value, this)) return `[Circular ref-${ids.get(value)}]`;
-			parents.set(value, this);
-			if (!ids.has(value)) ids.set(value, id++);
-		}
-		return value;
-	});
-}
-function isJSONResponse(value) {
-	if (!value || typeof value !== "object") return false;
-	return "_flag" in value && value._flag === "json";
-}
-/**
-* Headers that MUST be stripped when building an HTTP response from
-* arbitrary header input. These are request-only, hop-by-hop, or
-* transport-managed headers that cause protocol violations when present
-* on responses (e.g. Content-Length mismatch → net::ERR_CONTENT_LENGTH_MISMATCH).
-*
-* Sources:
-*   - RFC 9110 §10.1   (Request Context Fields)
-*   - RFC 9110 §7.6.1  (Connection / hop-by-hop)
-*   - RFC 9110 §11.6-7 (Authentication credentials)
-*   - RFC 9110 §12.5   (Content negotiation)
-*   - RFC 9110 §13.1   (Conditional request headers)
-*   - RFC 9110 §14.2   (Range requests)
-*   - RFC 6265 §5.4    (Cookie)
-*   - RFC 6454         (Origin)
-*/
-var REQUEST_ONLY_HEADERS = /* @__PURE__ */ new Set([
-	"host",
-	"user-agent",
-	"referer",
-	"from",
-	"expect",
-	"authorization",
-	"proxy-authorization",
-	"cookie",
-	"origin",
-	"accept-charset",
-	"accept-encoding",
-	"accept-language",
-	"if-match",
-	"if-none-match",
-	"if-modified-since",
-	"if-unmodified-since",
-	"if-range",
-	"range",
-	"max-forwards",
-	"connection",
-	"keep-alive",
-	"transfer-encoding",
-	"te",
-	"upgrade",
-	"trailer",
-	"proxy-connection",
-	"content-length"
-]);
-function stripRequestOnlyHeaders(headers) {
-	for (const name of REQUEST_ONLY_HEADERS) headers.delete(name);
-}
-/**
-* Copy headers from `source` into `target`. `Set-Cookie` is appended (one
-* header per cookie) because RFC 9110 §5.3 notes it cannot be combined
-* into a single comma-separated value; other headers are set (replace).
-*/
-function copyHeaders(target, source) {
-	if (!source) return;
-	for (const [key, value] of new Headers(source).entries()) if (key.toLowerCase() === "set-cookie") target.append(key, value);
-	else target.set(key, value);
-}
-function toResponse(data, init) {
-	if (data instanceof Response) {
-		if (init?.headers) {
-			const safeHeaders = new Headers(init.headers);
-			stripRequestOnlyHeaders(safeHeaders);
-			copyHeaders(data.headers, safeHeaders);
-		}
-		return data;
-	}
-	if (isJSONResponse(data)) {
-		const body = data.body;
-		const routerResponse = data.routerResponse;
-		if (routerResponse instanceof Response) return routerResponse;
-		const headers = new Headers();
-		copyHeaders(headers, routerResponse?.headers);
-		copyHeaders(headers, data.headers);
-		if (init?.headers) {
-			const safeHeaders = new Headers(init.headers);
-			stripRequestOnlyHeaders(safeHeaders);
-			copyHeaders(headers, safeHeaders);
-		}
-		headers.set("Content-Type", "application/json");
-		return new Response(JSON.stringify(body), {
-			...routerResponse,
-			headers,
-			status: data.status ?? init?.status ?? routerResponse?.status,
-			statusText: init?.statusText ?? routerResponse?.statusText
-		});
-	}
-	if (isAPIError$1(data)) return toResponse(data.body, {
-		status: init?.status ?? data.statusCode,
-		statusText: data.status.toString(),
-		headers: init?.headers || data.headers
-	});
-	let body = data;
-	const headers = new Headers(init?.headers);
-	stripRequestOnlyHeaders(headers);
-	if (!data) {
-		if (data === null) body = JSON.stringify(null);
-		headers.set("content-type", "application/json");
-	} else if (typeof data === "string") {
-		body = data;
-		headers.set("Content-Type", "text/plain");
-	} else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-		body = data;
-		headers.set("Content-Type", "application/octet-stream");
-	} else if (data instanceof Blob) {
-		body = data;
-		headers.set("Content-Type", data.type || "application/octet-stream");
-	} else if (data instanceof FormData) body = data;
-	else if (data instanceof URLSearchParams) {
-		body = data;
-		headers.set("Content-Type", "application/x-www-form-urlencoded");
-	} else if (data instanceof ReadableStream) {
-		body = data;
-		headers.set("Content-Type", "application/octet-stream");
-	} else if (isJSONSerializable(data)) {
-		body = safeStringify(data);
-		headers.set("Content-Type", "application/json");
-	}
-	return new Response(body, {
-		...init,
-		headers
-	});
-}
-//#endregion
-//#region node_modules/better-call/dist/endpoint.mjs
-function createEndpoint(pathOrOptions, handlerOrOptions, handlerOrNever) {
-	const path = typeof pathOrOptions === "string" ? pathOrOptions : void 0;
-	const options = typeof handlerOrOptions === "object" ? handlerOrOptions : pathOrOptions;
-	const handler = typeof handlerOrOptions === "function" ? handlerOrOptions : handlerOrNever;
-	if ((options.method === "GET" || options.method === "HEAD") && options.body) throw new BetterCallError("Body is not allowed with GET or HEAD methods");
-	if (path && /\/{2,}/.test(path)) throw new BetterCallError("Path cannot contain consecutive slashes");
-	const internalHandler = async (...inputCtx) => {
-		const context = inputCtx[0] || {};
-		const { data: internalContext, error: validationError } = await tryCatch(createInternalContext(context, {
-			options,
-			path
-		}));
-		if (validationError) {
-			if (!(validationError instanceof ValidationError$1)) throw validationError;
-			if (options.onValidationError) await options.onValidationError({
-				message: validationError.message,
-				issues: validationError.issues
-			});
-			throw new APIError$1(400, {
-				message: validationError.message,
-				code: "VALIDATION_ERROR"
-			});
-		}
-		const response = await handler(internalContext).catch(async (e) => {
-			if (isAPIError$1(e)) {
-				const onAPIError = options.onAPIError;
-				if (onAPIError) await onAPIError(e);
-				if (context.asResponse) return e;
-			}
-			throw e;
-		});
-		const headers = internalContext.responseHeaders;
-		const status = internalContext.responseStatus;
-		return context.asResponse ? toResponse(response, {
-			headers,
-			status
-		}) : context.returnHeaders ? context.returnStatus ? {
-			headers,
-			response,
-			status
-		} : {
-			headers,
-			response
-		} : context.returnStatus ? {
-			response,
-			status
-		} : response;
-	};
-	internalHandler.options = options;
-	internalHandler.path = path;
-	return internalHandler;
-}
-function combineMiddleware(local, configured) {
-	return [...local ?? [], ...configured ?? []];
-}
-createEndpoint.create = (opts) => {
-	function createConfiguredEndpoint(...args) {
-		if (args.length === 3) {
-			const [path, options, handler] = args;
-			return createEndpoint(path, {
-				...options,
-				use: combineMiddleware(options.use, opts?.use)
-			}, handler);
-		}
-		const [options, handler] = args;
-		return createEndpoint({
-			...options,
-			use: combineMiddleware(options.use, opts?.use)
-		}, handler);
-	}
-	return createConfiguredEndpoint;
-};
-//#endregion
-//#region node_modules/better-call/dist/middleware.mjs
-function createMiddleware(optionsOrHandler, handler) {
-	const internalHandler = async (inputCtx) => {
-		const context = inputCtx;
-		const _handler = typeof optionsOrHandler === "function" ? optionsOrHandler : handler;
-		const internalContext = await createInternalContext(context, {
-			options: typeof optionsOrHandler === "function" ? {} : optionsOrHandler,
-			path: "/"
-		});
-		if (!_handler) throw new Error("handler must be defined");
-		try {
-			const response = await _handler(internalContext);
-			const headers = internalContext.responseHeaders;
-			return context.returnHeaders ? {
-				headers,
-				response
-			} : response;
-		} catch (e) {
-			if (isAPIError$1(e)) Object.defineProperty(e, kAPIErrorHeaderSymbol, {
-				enumerable: false,
-				configurable: true,
-				get() {
-					return internalContext.responseHeaders;
-				}
-			});
-			throw e;
-		}
-	};
-	internalHandler.options = typeof optionsOrHandler === "function" ? {} : optionsOrHandler;
-	return internalHandler;
-}
-createMiddleware.create = (opts) => {
-	function fn(optionsOrHandler, handler) {
-		if (typeof optionsOrHandler === "function") return createMiddleware({ use: opts?.use }, optionsOrHandler);
-		if (!handler) throw new Error("Middleware handler is required");
-		return createMiddleware({
-			...optionsOrHandler,
-			method: "*",
-			use: [...opts?.use || [], ...optionsOrHandler.use || []]
-		}, handler);
-	}
-	return fn;
-};
-//#endregion
 //#region node_modules/better-call/dist/openapi.mjs
 var paths = {};
 function getTypeFromZodType(zodType) {
@@ -16437,6 +16423,11 @@ var createRouter$1 = (endpoints, config) => {
 	};
 };
 //#endregion
+//#region node_modules/@better-auth/core/dist/utils/is-api-error.mjs
+function isAPIError(error) {
+	return error instanceof APIError$1 || error instanceof APIError || error?.name === "APIError";
+}
+//#endregion
 //#region node_modules/@better-auth/core/dist/context/endpoint-context.mjs
 var ensureAsyncStorage$1 = async () => {
 	const betterAuthGlobal = __getBetterAuthGlobal();
@@ -16453,52 +16444,6 @@ async function getCurrentAuthContext() {
 }
 async function runWithEndpointContext(context, fn) {
 	return (await ensureAsyncStorage$1()).run(context, fn);
-}
-//#endregion
-//#region node_modules/@better-auth/core/dist/context/request-state.mjs
-var ensureAsyncStorage = async () => {
-	const betterAuthGlobal = __getBetterAuthGlobal();
-	const existing = betterAuthGlobal.context.requestStateAsyncStorage;
-	if (existing) return existing;
-	const AsyncLocalStorage = await getAsyncLocalStorage();
-	betterAuthGlobal.context.requestStateAsyncStorage ??= new AsyncLocalStorage();
-	return betterAuthGlobal.context.requestStateAsyncStorage;
-};
-async function hasRequestState() {
-	return (await ensureAsyncStorage()).getStore() !== void 0;
-}
-async function getCurrentRequestState() {
-	const store = (await ensureAsyncStorage()).getStore();
-	if (!store) throw new Error("No request state found. Please make sure you are calling this function within a `runWithRequestState` callback.");
-	return store;
-}
-async function runWithRequestState(store, fn) {
-	return (await ensureAsyncStorage()).run(store, fn);
-}
-function defineRequestState(initFn) {
-	const ref = Object.freeze({});
-	return {
-		get ref() {
-			return ref;
-		},
-		async get() {
-			const store = await getCurrentRequestState();
-			if (!store.has(ref)) {
-				const initialValue = await initFn();
-				store.set(ref, initialValue);
-				return initialValue;
-			}
-			return store.get(ref);
-		},
-		async set(value) {
-			(await getCurrentRequestState()).set(ref, value);
-		}
-	};
-}
-//#endregion
-//#region node_modules/@better-auth/core/dist/utils/is-api-error.mjs
-function isAPIError(error) {
-	return error instanceof APIError$1 || error instanceof APIError || error?.name === "APIError";
 }
 //#endregion
 //#region node_modules/@better-auth/core/dist/api/index.mjs
@@ -16825,6 +16770,61 @@ function getIp(req, options) {
 */
 function createRateLimitKey(ip, path) {
 	return `${ip}|${path}`;
+}
+//#endregion
+//#region node_modules/@better-auth/core/dist/context/request-state.mjs
+var ensureAsyncStorage = async () => {
+	const betterAuthGlobal = __getBetterAuthGlobal();
+	const existing = betterAuthGlobal.context.requestStateAsyncStorage;
+	if (existing) return existing;
+	const AsyncLocalStorage = await getAsyncLocalStorage();
+	betterAuthGlobal.context.requestStateAsyncStorage ??= new AsyncLocalStorage();
+	return betterAuthGlobal.context.requestStateAsyncStorage;
+};
+async function hasRequestState() {
+	return (await ensureAsyncStorage()).getStore() !== void 0;
+}
+async function getCurrentRequestState() {
+	const store = (await ensureAsyncStorage()).getStore();
+	if (!store) throw new Error("No request state found. Please make sure you are calling this function within a `runWithRequestState` callback.");
+	return store;
+}
+async function runWithRequestState(store, fn) {
+	return (await ensureAsyncStorage()).run(store, fn);
+}
+function defineRequestState(initFn) {
+	const ref = Object.freeze({});
+	return {
+		get ref() {
+			return ref;
+		},
+		async get() {
+			const store = await getCurrentRequestState();
+			if (!store.has(ref)) {
+				const initialValue = await initFn();
+				store.set(ref, initialValue);
+				return initialValue;
+			}
+			return store.get(ref);
+		},
+		async set(value) {
+			(await getCurrentRequestState()).set(ref, value);
+		}
+	};
+}
+//#endregion
+//#region node_modules/@better-auth/core/dist/utils/db.mjs
+/**
+* Filters output data by removing fields with the `returned: false` attribute.
+* This ensures sensitive fields are not exposed in API responses.
+*/
+function filterOutputFields(data, additionalFields) {
+	if (!data || !additionalFields) return data;
+	const returnFiltered = Object.entries(additionalFields).filter(([, { returned }]) => returned === false).map(([key]) => key);
+	return Object.entries(structuredClone(data)).filter(([key]) => !returnFiltered.includes(key)).reduce((acc, [key, value]) => ({
+		...acc,
+		[key]: value
+	}), {});
 }
 //#endregion
 //#region node_modules/@better-auth/core/dist/utils/host.mjs
@@ -20253,4 +20253,4 @@ var socialProviders = {
 };
 var SocialProviderListEnum = _enum(Object.keys(socialProviders)).or(string());
 //#endregion
-export { validateAlgorithms as $, generateId as $t, email as A, checkCryptoKey as At, _coercedString as B, ATTR_CONTEXT as Bt, serializeSignedCookie as C, JWEInvalid as Ct, any as D, JWTExpired as Dt, ZodString as E, JWTClaimValidationFailed as Et, optional as F, encode$2 as Ft, importJWK as G, getAuthTables as Gt, base64Url as H, ATTR_OPERATION_ID as Ht, record as I, uint32be as It, validateClaimsSet as J, runWithAdapter as Jt, jwtVerify as K, getCurrentAdapter as Kt, string as L, uint64be as Lt, looseObject as M, checkUsage as Mt, number as N, concat as Nt, array as O, JWTInvalid as Ot, object as P, decoder as Pt, JWS_RECOGNIZED as Q, initGetFieldName as Qt, union as R, createAdapterFactory as Rt, serializeCookie as S, JWEDecryptionFailed as St, ZodBoolean as T, JWSInvalid as Tt, decodeJwt as U, import_src as Ut, base64$1 as V, ATTR_HOOK_TYPE as Vt, decodeProtectedHeader as W, safeJSONParse as Wt, sign as X, getBetterAuthVersion as Xt, jwsAlgorithm as Y, runWithTransaction as Yt, JWE_RECOGNIZED as Z, initGetModelName as Zt, runWithRequestState as _, APIError as _n, isCryptoKey as _t, createAuthorizationURL as a, isSafeUrlScheme as an, jwkToKey as at, createRouter$1 as b, BASE_ERROR_CODES as bn, JOSEAlgNotAllowed as bt, createRateLimitKey as c, logger as cn, digest as ct, deprecate as d, env as dn, unprotected as dt, createRandomStringGenerator as en, validateCrit as et, createAuthEndpoint as f, getBooleanEnvVar as fn, isDisjoint as ft, hasRequestState as g, isTest as gn, assertCryptoKey as gt, defineRequestState as h, isProduction as hn, encode$1 as ht, refreshAccessToken as i, createFetch as in, prepareKey as it, literal as j, checkModulusLength as jt, boolean as k, invalidKeyInput as kt, findInvalidTrustedProxies as l, shouldPublishLog as ln, encodeBase64url as lt, isAPIError as m, isDevelopment as mn, isObject$1 as mt, socialProviders as n, toKebabCase as nn, jweAlgorithm as nt, applyDefaultAccessTokenExpiry as o, normalizePathname as on, assertNotSet as ot, createAuthMiddleware as p, getEnvVar as pn, isJWK as pt, JWTClaimsBuilder as q, queueAfterTransactionHook as qt, validateAuthorizationCode as r, betterFetch as rn, jweEncryption as rt, isLoopbackHost as s, createLogger as sn, decodeBase64url as st, SocialProviderListEnum as t, capitalizeFirstLetter as tn, validateCritDuplicates as tt, getIp as u, ENV as un, parseJoseHeader as ut, getCurrentAuthContext as v, BetterAuthError as vn, isKeyLike as vt, filterOutputFields as w, JWKInvalid as wt, toResponse as x, defineErrorCodes as xn, JOSENotSupported as xt, runWithEndpointContext as y, kAPIErrorHeaderSymbol as yn, isKeyObject as yt, _coercedBoolean as z, createWithSpan as zt };
+export { validateAlgorithms as $, generateId as $t, number as A, checkCryptoKey as At, serializeSignedCookie as B, ATTR_CONTEXT as Bt, ZodString as C, JWEInvalid as Ct, email as D, JWTExpired as Dt, boolean as E, JWTClaimValidationFailed as Et, union as F, encode$2 as Ft, importJWK as G, getAuthTables as Gt, base64Url as H, ATTR_OPERATION_ID as Ht, _coercedBoolean as I, uint32be as It, validateClaimsSet as J, runWithAdapter as Jt, jwtVerify as K, getCurrentAdapter as Kt, _coercedString as L, uint64be as Lt, optional as M, checkUsage as Mt, record as N, concat as Nt, literal as O, JWTInvalid as Ot, string as P, decoder as Pt, JWS_RECOGNIZED as Q, initGetFieldName as Qt, toResponse as R, createAdapterFactory as Rt, ZodBoolean as S, JWEDecryptionFailed as St, array as T, JWSInvalid as Tt, decodeJwt as U, import_src as Ut, base64$1 as V, ATTR_HOOK_TYPE as Vt, decodeProtectedHeader as W, safeJSONParse as Wt, sign as X, getBetterAuthVersion as Xt, jwsAlgorithm as Y, runWithTransaction as Yt, JWE_RECOGNIZED as Z, initGetModelName as Zt, createAuthMiddleware as _, APIError as _n, isCryptoKey as _t, createAuthorizationURL as a, isSafeUrlScheme as an, jwkToKey as at, isAPIError as b, BASE_ERROR_CODES as bn, JOSEAlgNotAllowed as bt, filterOutputFields as c, logger as cn, digest as ct, runWithRequestState as d, env as dn, unprotected as dt, createRandomStringGenerator as en, validateCrit as et, createRateLimitKey as f, getBooleanEnvVar as fn, isDisjoint as ft, createAuthEndpoint as g, isTest as gn, assertCryptoKey as gt, deprecate as h, isProduction as hn, encode$1 as ht, refreshAccessToken as i, createFetch as in, prepareKey as it, object as j, checkModulusLength as jt, looseObject as k, invalidKeyInput as kt, defineRequestState as l, shouldPublishLog as ln, encodeBase64url as lt, getIp as m, isDevelopment as mn, isObject$1 as mt, socialProviders as n, toKebabCase as nn, jweAlgorithm as nt, applyDefaultAccessTokenExpiry as o, normalizePathname as on, assertNotSet as ot, findInvalidTrustedProxies as p, getEnvVar as pn, isJWK as pt, JWTClaimsBuilder as q, queueAfterTransactionHook as qt, validateAuthorizationCode as r, betterFetch as rn, jweEncryption as rt, isLoopbackHost as s, createLogger as sn, decodeBase64url as st, SocialProviderListEnum as t, capitalizeFirstLetter as tn, validateCritDuplicates as tt, hasRequestState as u, ENV as un, parseJoseHeader as ut, getCurrentAuthContext as v, BetterAuthError as vn, isKeyLike as vt, any as w, JWKInvalid as wt, createRouter$1 as x, defineErrorCodes as xn, JOSENotSupported as xt, runWithEndpointContext as y, kAPIErrorHeaderSymbol as yn, isKeyObject as yt, serializeCookie as z, createWithSpan as zt };

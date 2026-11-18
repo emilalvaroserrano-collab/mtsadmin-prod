@@ -1,0 +1,1 @@
+import{t as e}from"./useNavigate-CIR7_RlE.js";import{t}from"./jsx-runtime-NZYk81nU.js";var n=t(),r=()=>(0,n.jsx)(e,{to:`/portal`});export{r as component};

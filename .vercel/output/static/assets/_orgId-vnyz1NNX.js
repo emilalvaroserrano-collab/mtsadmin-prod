@@ -1,0 +1,1 @@
+import{_ as e}from"./index-DNJekjm6.js";var t=e;export{t as component};
